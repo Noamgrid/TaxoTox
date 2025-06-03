@@ -47,6 +47,7 @@ Sys.setlocale("LC_TIME", "English")
 getwd()
 #load internal data first
 # Loading data
+# paths will have to become relative
 NUKA <- read.fst("C:/Users/owner/Desktop/TaxoTox/Data/NUKA.fst") %>% 
   rename("CASRN" = CAS)# CAS from NUKA
 DSSTox <- read.fst("C:/Users/owner/Desktop/DSSTox.fst") # CAS from DSSTox - needs to figure out how to pull
