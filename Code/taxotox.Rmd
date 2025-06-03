@@ -43,11 +43,13 @@ Sys.setlocale("LC_TIME", "English")
 
 #DATA LOADING
 ```{r}
+
+getwd()
 #load internal data first
 # Loading data
-NUKA <- read.fst("NUKA.fst") %>% 
+NUKA <- read.fst("C:/Users/owner/Desktop/TaxoTox/Data/NUKA.fst") %>% 
   rename("CASRN" = CAS)# CAS from NUKA
-DSSTox <- read.fst("DSSTox.fst") # CAS from DSSTox
+DSSTox <- read.fst("C:/Users/owner/Desktop/DSSTox.fst") # CAS from DSSTox - needs to figure out how to pull
 Internal_data <- gb_p # The user's data (in this case- the GreenBasine project)
 p_vector <- Internal_data[[1]] # Create a vector of compounds from the user's data for CAS search
 
