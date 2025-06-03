@@ -1,0 +1,751 @@
+---
+title: "taxotox"
+author: "Noam_G"
+date: "2025-03-11"
+output: html_document
+---
+#Libraries
+
+```{r}
+library(openxlsx)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(scales)
+library(ggthemes)
+library(tidyverse)
+library(ggpattern)
+library(ggpubr)
+library(ggpmisc)
+library(hrbrthemes)
+library(remotes)
+library(purrr)  
+library(readxl)
+library(stringr)
+
+
+library(data.table)
+library(stringdist)
+library(fst)
+library(tcltk)
+library(ECOTOXr)
+
+
+
+
+#install.packages("")
+
+
+#download_ecotox_data()
+Sys.setlocale("LC_TIME", "English")
+```
+
+
+#DATA LOADING
+```{r}
+#load internal data first
+# Loading data
+NUKA <- read.fst("NUKA.fst") %>% 
+  rename("CASRN" = CAS)# CAS from NUKA
+DSSTox <- read.fst("DSSTox.fst") # CAS from DSSTox
+Internal_data <- gb_p # The user's data (in this case- the GreenBasine project)
+p_vector <- Internal_data[[1]] # Create a vector of compounds from the user's data for CAS search
+
+# Convert to data.table for more efficient operations
+setDT(NUKA)
+setDT(DSSTox)
+setDT(Internal_data)
+```
+
+
+
+#CASRN SEARCH
+```{r}
+# First search - NUKA (exact search)
+internal_list1 <- NUKA[NUKA$PREFERRED_NAME %in% p_vector, ]
+p_vector_found <- internal_list1$PREFERRED_NAME # Creating a vector of all p found
+unfound <- p_vector[!p_vector %in% p_vector_found] # Saving the p that weren't found in NUKA for further search in DSSTox
+
+# Create a data.table for unfounded pollutants for easier manipulation
+unfound_dt <- data.table(PREFERRED_NAME = unfound)
+
+
+# Second search - DSSTox (fuzzy)
+# Interactive fuzzy matching function with confirmation for uncertain matches
+fuzzy_match_interactive <- function(source_names, target_dt, match_col, threshold = 0.05, confirm_threshold = 0.01) {
+  # Create a result data table
+  result <- data.table(
+    source_name = source_names,
+    matched_name = NA_character_,
+    distance = NA_real_,
+    confirmed = FALSE
+  )
+  
+  # Process each source name row by row
+  for (i in 1:length(source_names)) {
+    name <- source_names[i]
+    
+    # Skip NA values in source
+    if (is.na(name)) {
+      next
+    }
+    
+    # Calculate distances to all target names (excluding NA targets)
+    valid_targets <- target_dt[[match_col]][!is.na(target_dt[[match_col]])]
+    
+    # Handle case where there are no valid targets
+    if (length(valid_targets) == 0) {
+      next
+    }
+    
+    distances <- stringdist(name, valid_targets, method = "jw")
+    
+    # Find the best match if any valid distances exist
+    if (length(distances) > 0 && !all(is.na(distances))) {
+      min_dist <- min(distances, na.rm = TRUE)
+      best_idx <- which.min(distances)
+      best_match <- valid_targets[best_idx]
+      match_quality <- round((1 - min_dist) * 100, 1)
+      
+      if (!is.na(min_dist) && min_dist <= threshold) {
+        # Get CASRN number for the matched compound
+        casrn_number <- target_dt[get(match_col) == best_match, CASRN]
+        casrn_display <- if(length(casrn_number) > 0 && !is.na(casrn_number[1])) casrn_number[1] else "Not available"
+        
+        # Auto-accept 100% matches, show message box for matches >= 95%
+        if (match_quality == 100) {
+          # Auto-accept perfect matches
+          confirmed <- TRUE
+        } else if (match_quality >= threshold) {
+          # Show message box for high confidence matches (95% and above, but not 100%)
+          message_text <- paste0(
+            "Match found for compound matching:\n\n",
+            "Source compound: ", name, "\n",
+            "Matched compound: ", best_match, "\n",
+            "CASRN number: ", casrn_display, "\n",
+            "Match confidence: ", match_quality, "%\n\n",
+            "Do you want to accept this match?"
+          )
+          
+          # Display message box with consistent format
+          answer <- tcltk::tkmessageBox(
+            title = paste0("Compound Match (", match_quality, "% confidence)"),
+            message = message_text,
+            icon = "question", 
+            type = "yesno"
+          )
+          
+          confirmed <- as.character(answer) == "yes"
+        } else {
+          # For matches below 95%, don't show message box (reject automatically)
+          confirmed <- FALSE
+        }
+        
+        if (confirmed) {
+          result[i, `:=`(
+            matched_name = best_match,
+            distance = min_dist,
+            confirmed = TRUE
+          )]
+        }
+      }
+    }
+  }
+  
+  return(result)
+}
+
+
+# Run the interactive matching
+matches <- fuzzy_match_interactive(
+  unfound, 
+  DSSTox, 
+  "PREFERRED_NAME",
+  threshold = 0.1,      # Maximum allowed distance
+  confirm_threshold = 0.01  # Auto-accept if distance <= 0.01
+)
+
+
+# Create final result data.table with CASRN numbers
+# First, get the CASRN numbers for exact matches from NUKA
+exact_matches <- NUKA[PREFERRED_NAME %in% p_vector_found, .(PREFERRED_NAME, CASRN)]
+
+# Then get CASRN numbers for fuzzy matches from DSSTox
+fuzzy_confirmed <- matches[confirmed == TRUE]
+fuzzy_matches <- DSSTox[DSSTox$PREFERRED_NAME %in% fuzzy_confirmed$matched_name, 
+                        .(PREFERRED_NAME, CASRN)]
+
+# Map the original names to the matched DSSTox names to get CASRN numbers
+fuzzy_results <- merge(
+  fuzzy_confirmed[, .(source_name, matched_name)],
+  fuzzy_matches,
+  by.x = "matched_name",
+  by.y = "PREFERRED_NAME",
+  all.x = TRUE
+)
+
+# Rename columns for consistency
+setnames(fuzzy_results, "source_name", "PREFERRED_NAME")
+
+# Combine exact and fuzzy matches
+final_results <- rbindlist(
+  list(
+    exact_matches,
+    fuzzy_results[, .(PREFERRED_NAME, CASRN)]
+  ),
+  use.names = TRUE,
+  fill = TRUE
+)
+
+
+
+#search CARSN result:
+percentage_found <- round((nrow(final_results) * 100 / length(p_vector)), 1)
+
+#information about first stage- how many found and not found in exact search from NUKA
+print(paste("Number of compounds found in NUKA:", length(p_vector_found), "out of", length(p_vector)))
+# Count confirmed matches
+match_count <- sum(matches$confirmed, na.rm = TRUE)
+print(paste("Number of confirmed fuzzy matches (exact match from DSSTox):", match_count))
+# Count unexact matches (matches accepted through message box, excluding 100% matches)
+unexact_matches <- sum(matches$confirmed == TRUE & matches$distance > 0, na.rm = TRUE)
+print(paste("Number of unexact matches accepted by user:", unexact_matches))
+print(paste("Total pollutants with CASRN numbers:", nrow(final_results), "out of", length(p_vector), "(",percentage_found,"%)"))
+
+```
+
+#TOX DATA SEARCH
+
+```{r}
+
+# Create a vector of all CASRN numbers from your final results
+casrn_vector <- final_results$CASRN[!is.na(final_results$CASRN)]
+
+
+casrn_vector = casrn_vector[1]
+
+# Remove any empty strings or invalid entries
+casrn_vector <- casrn_vector[casrn_vector != "" & !is.na(casrn_vector)] 
+
+# Search for algae EC50 toxicity data using ECOTOXr
+# Note: This may take some time depending on the number of compounds
+
+
+
+
+algae_toxicity_data <- search_ecotox(
+  chemical_name = NULL,
+  cas_number = casrn_vector,
+  species = NULL,
+  taxa = "Fish",  # Focus on algae
+  effect = NULL,   # Get all effect types
+  endpoint = NULL, # Get all endpoints (LC50, EC50, NOEC, etc.)
+  duration = NULL, # Get all durations
+  download_date = Sys.Date()
+)
+
+
+search_ecotox(
+search = list_ecotox_fields("all"),
+output_fields = list_ecotox_fields("default"),
+group_by_results = TRUE,
+compute = FALSE,
+as_data_frame = TRUE,
+...
+)
+
+
+search_ecotox(
+  search,
+  output_fields = list_ecotox_fields("default"),
+  group_by_results = TRUE,
+  compute = FALSE,
+  as_data_frame = TRUE,
+  ...
+)
+
+help(package = "ECOTOXr")
+
+
+chemicals.cas_number = casrn_vector
+
+
+if (check_ecotox_availability()) {
+df <- search_ecotox(
+list(
+latin_name = list(
+terms = c("Skeletonema"),
+method = "contains"
+)
+), list_ecotox_fields("full"))
+df_unit <-
+process_ecotox_units(df, warn = FALSE)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+fields_df <- as.data.frame(list_ecotox_fields("all")) %>% 
+  write.xlsx("fields.xlsx")
+
+
+
+
+as_numeric_ecotox(tests.test_cas)
+
+
+
+
+
+
+
+if (check_ecotox_availability()) {
+df <- search_ecotox(
+list(
+latin_name = list(
+terms = c("Skeletonema", "Daphnia"),
+method = "contains"
+),
+chemical_name = list(
+terms = "benzene",
+method = "exact"
+)
+), list_ecotox_fields("full"))
+df_unit <-
+process_ecotox_units(df, warn = FALSE)
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+searchrersults <- search_ecotox(
+  list(
+    latin_name    = list(terms = "Daphnia magna", method = "exact"),
+    chemical_name = list(terms = "benzene",       method = "exact")
+  )
+)
+
+
+#########################
+
+# OPTIONAL: clean and deduplicate CASRNs first
+casrn_vector <- unique(casrn_vector[casrn_vector != "" & !is.na(casrn_vector)])
+
+# Get path to DB (optional but helps avoid ambiguity)
+db_path <- get_ecotox_sqlite_file()
+
+# Split CASRNs into chunks of 20
+casrn_chunks <- split(casrn_vector, ceiling(seq_along(casrn_vector) / 5)) 
+
+# Safe wrapper
+safe_search <- safely(function(chunk) {
+  search_ecotox(
+    search = "toxicity",
+    cas_number = chunk,
+    taxa = "Algae",
+    endpoint = "EC50",
+    download_date = Sys.Date(),
+    path = db_path  # use explicit path to the SQLite file
+  )
+})
+
+# Run the safe search
+results_list <- map(casrn_chunks, safe_search)
+
+# Extract good results
+successful_results <- map(results_list, "result")
+
+# Combine successful results
+algae_toxicity_data <- bind_rows(successful_results)
+
+# Optional: identify failed chunks
+failed_chunks <- which(map_lgl(results_list, ~ !is.null(.x$error)))
+
+# Print which chunks failed
+if (length(failed_chunks) > 0) {
+  message("Failed chunks at indices: ", paste(failed_chunks, collapse = ", "))
+  message("Problem CASRNs: ", paste(unlist(casrn_chunks[failed_chunks]), collapse = ", "))
+}
+
+#########################
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Check the results
+print(paste("Total number of algae EC50 records found:", nrow(algae_toxicity_data)))
+
+# Show summary of the data
+if(nrow(algae_toxicity_data) > 0) {
+  print("Summary of algae EC50 toxicity data:")
+  print(table(algae_toxicity_data$endpoint))
+  
+  print("\nAlgae species found:")
+  print(table(algae_toxicity_data$species))
+  
+  print("\nEffect measurements found:")
+  print(table(algae_toxicity_data$effect_measurement))
+  
+  print("\nFirst few EC50 records:")
+  print(head(algae_toxicity_data[, c("cas_number", "chemical_name", "species", "endpoint", "effect_measurement", "effect")]))
+} else {
+  print("No algae EC50 data found for any of the CASRN numbers")
+}
+
+# Save the results
+if(nrow(algae_toxicity_data) > 0) {
+  write.csv(algae_toxicity_data, "algae_EC50_toxicity_data.csv", row.names = FALSE)
+  print("Algae EC50 toxicity data saved to 'algae_EC50_toxicity_data.csv'")
+}
+
+# Optional: Create a summary table showing which compounds have algae EC50 data
+compounds_with_algae_data <- unique(algae_toxicity_data$cas_number)
+summary_table <- data.table(
+  CASRN = casrn_vector,
+  Has_Algae_EC50_Data = casrn_vector %in% compounds_with_algae_data
+)
+
+# Merge with original compound names
+summary_with_names <- merge(
+  final_results,
+  summary_table,
+  by = "CASRN",
+  all.x = TRUE
+)
+
+print(paste("Compounds with algae EC50 toxicity data:", sum(summary_table$Has_Algae_EC50_Data, na.rm = TRUE), 
+            "out of", length(casrn_vector)))
+
+# Save the summary
+write.csv(summary_with_names, "compounds_algae_EC50_summary.csv", row.names = FALSE)
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+___________________
+Search examples:
+#Estuary research p_list
+```{r}
+
+#name matches with the users data
+p_data <- read.xlsx("all_p.xlsx", sheet = 5) %>% 
+  rename("PREFERRED_NAME" = Contaminants) #ask the user to change the column name for matching
+p_list <- as.list(p_data$Contaminants)
+
+
+#finding matches in contaminants names
+match_count <- sum(combined_df$PREFERRED_NAME %in% p_data$PREFERRED_NAME)
+print(paste("exact matches:", match_count))
+
+```
+
+
+___________________________
+#OLD
+#p_list
+##GB_P
+```{r}
+GB <- read.xlsx("C:/Users/owner/OneDrive - huji.ac.il/PhD/reports/GreenBasine/CW_nabulus_raw.xlsx")
+
+gb_p <- GB %>% 
+  select(1, 4, 21:ncol(.)) %>% 
+  mutate(across(3:ncol(.), ~as.numeric(.) %>% replace_na(0))) %>% # warning: NAs introduced by coercio - needs to be checked
+  filter(rowSums(across(3:ncol(.))) > 0) %>% 
+  pivot_longer(cols = 3:length(.), names_to = "PREFERRED_NAME", values_to = "Concentration") %>% 
+  pivot_wider(names_from = c(1,2), values_from = Concentration)
+
+#write.fst(gb_p, "gb_p.fst")
+
+```
+
+
+
+##Athens p_CAS_list
+```{r}
+NUKA_data <- read.xlsx("C:/Users/owner/OneDrive - huji.ac.il/Research/DATA/NKUA_LC_target_list_Dec2021.xlsx") %>% 
+  rename(., "CAS" = CAS.Registry.Number,
+         "PREFERRED_NAME" = Compound)
+
+NUKA_p_list <- NUKA_data[,c(1,11)] 
+
+write.fst(NUKA_p_list, "NUKA.fst") 
+```
+
+#DSSToxDump df
+```{r}
+# Set the folder path containing your Excel files
+folder_path <- "C:/Users/owner/OneDrive - huji.ac.il/PhD/projects/taxotox/Data/DSSTox_Feb_2024"
+
+
+# Get all Excel file names in the folder
+excel_files <- list.files(path = folder_path, 
+                         pattern = "\\.(xlsx|xls)$", 
+                         full.names = TRUE)
+
+# Read all Excel files and store them in a list
+all_data <- map(excel_files, ~{
+  file_name <- basename(.x)
+  data <- read_excel(.x)
+  # Add a column to identify the source file if needed  - remove?
+ # data$source_file <- file_name - remove?
+  return(data)
+})
+
+# Name each dataframe in the list according to the file name
+names(all_data) <- basename(excel_files)
+
+# combine all data into a single dataframe and add a CAS column
+combined_df <- bind_rows(all_data) %>% 
+  select(-c(1,4,6:length(.))) 
+
+#add IUPAC names to the name column
+DSSTox_p_list <- rbind(
+  combined_df[, c("PREFERRED_NAME", "CASRN")],              
+  data.frame(PREFERRED_NAME = combined_df$IUPAC_NAME,       
+             CASRN = combined_df$CASRN)) 
+
+write.fst(DSSTox_p_list, "DSSTox.fst")
+
+
+```
+#other
+##old ECOROXr search
+```{r}
+searchrersults <- search_ecotox(
+  list(
+    latin_name    = list(terms = "Daphnia magna", method = "exact"),
+    chemical_name = list(terms = "benzene",       method = "exact")
+  )
+)
+
+head(searchrersults)
+
+
+colnames(searchrersults)
+
+
+
+
+# Initialize an empty data frame to store results
+cas_results <- data.frame(Pollutant = character(), CAS = character(), stringsAsFactors = FALSE)
+
+# Loop through each pollutant name and search for its CAS number
+for (pollutant in p_list) {
+  result <- search_ecotox(
+    list(chemical_name = list(terms = pollutant, method = "exact"))
+  )
+  
+  if (nrow(result) > 0) {
+    cas_number <- unique(result$cas_number)
+    cas_results <- rbind(cas_results, data.frame(Pollutant = pollutant, CAS = paste(cas_number, collapse = "; ")))
+  } else {
+    cas_results <- rbind(cas_results, data.frame(Pollutant = pollutant, CAS = NA))
+  }
+}
+
+
+# View results
+print(cas_results)
+
+
+```
+
+##Search by CAS#
+```{r}
+
+cas_list <- as.list(p_list[[4]])
+
+# Define taxonomic groups of interest
+target_groups <- c("fish", "crustacean", "algae")
+
+# Initialize an empty data frame to store results
+toxicity_results <- data.frame(CAS = character(), Organism = character(), Effect = character(),
+                               Endpoint = character(), Concentration = numeric(), Unit = character(),
+                               stringsAsFactors = FALSE)
+
+# Loop through each CAS number and retrieve toxicity data
+for (cas in cas_list) {
+  result <- search_ecotox(list(cas_number = list(terms = cas, method = "exact")))
+  
+  if (nrow(result) > 0) {
+    # Filter results for target taxonomic groups
+    filtered_result <- result %>%
+      filter(tolower(organism_group) %in% target_groups) %>%
+      select(cas_number, organism, effect, endpoint, concentration, concentration_units)
+    
+    # Append filtered data to final results
+    toxicity_results <- bind_rows(toxicity_results, filtered_result)
+  }
+}
+
+# View results
+print(toxicity_results)
+```
+
+
+##small search try
+
+```{r}
+smallcaslist <- as.list(p_list[[4]][1:4])
+
+target_groups <- c("fish", "crustacean", "algae")
+
+toxicity_results <- data.frame(CAS = character(), Organism = character(), Effect = character(),
+                               Endpoint = character(), Concentration = numeric(), Unit = character(),
+                               stringsAsFactors = FALSE)
+
+# Loop through each CAS number and retrieve toxicity data
+for (cas in cas_list) {
+  result <- search_ecotox(list(cas_number = list(terms = cas, method = "exact")))
+  
+  if (nrow(result) > 0) {
+    # Filter results for target taxonomic groups
+    filtered_result <- result %>%
+      filter(tolower(organism_group) %in% target_groups) %>%
+      select(cas_number, organism, effect, endpoint, concentration, concentration_units)
+    
+    # Append filtered data to final results
+    toxicity_results <- bind_rows(toxicity_results, filtered_result)
+  }
+}
+
+
+
+
+# Query the ECOTOX database to get a sample of the organism groups
+result <- search_ecotox(list(chemical_name = list(terms = "Paracetamol", method = "exact")))
+
+# Get unique taxonomic groups (organism groups)
+unique_taxonomic_groups <- unique(result$organism_group)
+
+# Print the unique taxonomic groups
+print(unique_taxonomic_groups)
+```
+
+##extractox package 
+```{r}
+extr_chem_info(iupac_names = c("Formaldehyde", "Aflatoxin B1"))
+
+extr_chem_info(iupac_names = c("4-Aminoantipyrine", "Paracetamol", "Alprazolam", "Atenolol", "Azithromycin"))
+```
+##new from deep search
+```{r}
+
+pollutant_names <- p_list # Example names
+
+
+cas_numbers <- vector("character", length(pollutant_names))
+
+for (i in seq_along(pollutant_names)) {
+  search_results <- search_ecotox(
+    list(chemical_name = list(terms = pollutant_names[i], method = "exact")),
+    output_fields = c("chemical_name", "cas_number")
+  )
+  if (nrow(search_results) > 0) {
+    cas_numbers[i] <- unique(search_results$cas_number)[1] # Take the first unique CAS number found
+  } else {
+    cas_numbers[i] <- NA # No exact match found
+  }
+}
+
+names(cas_numbers) <- pollutant_names
+print(cas_numbers)
+```
+
