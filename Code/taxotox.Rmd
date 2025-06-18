@@ -22,6 +22,7 @@ library(remotes)
 library(purrr)  
 library(readxl)
 library(stringr)
+library(RSQLite)
 
 
 library(data.table)
@@ -33,7 +34,7 @@ library(ECOTOXr)
 
 
 
-#install.packages("")
+#install.packages("RSQLite")
 
 
 #download_ecotox_data()
@@ -215,36 +216,118 @@ unexact_matches <- sum(matches$confirmed == TRUE & matches$distance > 0, na.rm =
 print(paste("Number of unexact matches accepted by user:", unexact_matches))
 print(paste("Total pollutants with CASRN numbers:", nrow(final_results), "out of", length(p_vector), "(",percentage_found,"%)"))
 
+
+
 ```
+
+#R TO SQL
+```{r}
+conn <- dbConnect(RSQLite::SQLite(), "C:/Users/owner/AppData/Local/ECOTOXr/ECOTOXr/Cache/ecotox_ascii_03_13_2025.sqlite")
+
+
+p_final <- as.vector(final_results$CASRN) #save as vector- with "-"
+p_final <- gsub("-", "", p_final)
+
+# Convert the vector to a comma-separated string for the SQL IN clause
+cas_list <- paste0("'", p_final, "'", collapse = ", ")
+
+mysearch <- paste0("SELECT
+    -- Select the relevant ED50 concentration value and its unit
+    results.conc1_mean AS ED50_Value,
+    results.conc1_unit AS ED50_Unit,
+    -- Select details about the chemical
+    chemicals.chemical_name AS ChemicalName,
+    chemicals.cas_number AS CAS_Number,
+    -- Select details about the organism
+    species.common_name AS OrganismCommonName,
+    species.latin_name AS OrganismLatinName,
+    species.phylum_division AS OrganismPhylum,
+    -- Select details about the test
+    tests.test_type AS TestType,
+    tests.exposure_type AS ExposureType,
+    tests.study_duration_mean AS StudyDuration,
+    tests.study_duration_unit AS StudyDurationUnit,
+    tests.test_id AS TestID,
+    results.result_id AS ResultID,
+    -- Additional fields that might be useful for context
+    results.effect AS Effect,
+    results.measurement AS Measurement
+FROM
+    results -- Start with the results table where ED50 data is found
+JOIN
+    tests ON results.test_id = tests.test_id -- Join to get test details, chemical CAS, and species number
+JOIN
+    chemicals ON tests.test_cas = chemicals.cas_number -- Join to get chemical name from CAS number
+JOIN
+    species ON tests.species_number = species.species_number -- Join to get species phylum/group
+WHERE
+    results.endpoint LIKE '%EC50%' -- Filter for Endpoint = ED50
+    AND chemicals.cas_number IN (", cas_list, ") -- Filter for all CAS numbers in p_final vector
+    AND species.phylum_division LIKE '%Arthropoda%' -- Filter for Arthropoda
+ORDER BY
+    results.conc1_mean;) -- Order results for easier review")
+
+output <- dbGetQuery(conn, mysearch)
+
+unique(output$ChemicalName)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 #TOX DATA SEARCH
 
 ```{r}
 
-# Create a vector of all CASRN numbers from your final results
-casrn_vector <- final_results$CASRN[!is.na(final_results$CASRN)]
+# Create a vector of all CASRN that were found
+casrn_vector <- final_results$CASRN[!is.na(final_results$CASRN)] #add filter to empty values
+casrn_vector <- casrn_vector[casrn_vector != "" & !is.na(casrn_vector)] 
 
 
 casrn_vector = casrn_vector[1]
 
 # Remove any empty strings or invalid entries
-casrn_vector <- casrn_vector[casrn_vector != "" & !is.na(casrn_vector)] 
+
 
 # Search for algae EC50 toxicity data using ECOTOXr
 # Note: This may take some time depending on the number of compounds
 
+#find the correct columns names from the DB Browser and filter data by species, endpoint (LC50) and CASRN - see is there is an example on the article
 
+
+ecotox_group = c("Fish", "FishStandard Test Species", "Crustaceans", "CrustaceansStandard Test Species", "Algae", "AlgaeStandard Test Species" )
+
+search_list=list(
+    endpoint    = list(terms = "LC50",              , method = "contains"),
+    latin_name  = list(terms = "Rattus norvegicus"  , method = "exact")   ,
+    test_cas    = list(terms = "71432"              , method = "exact")
+  )
 
 
 algae_toxicity_data <- search_ecotox(
-  chemical_name = NULL,
-  cas_number = casrn_vector,
-  species = NULL,
-  taxa = "Fish",  # Focus on algae
-  effect = NULL,   # Get all effect types
-  endpoint = NULL, # Get all endpoints (LC50, EC50, NOEC, etc.)
-  duration = NULL, # Get all durations
-  download_date = Sys.Date()
+  search = "tests.test_grade",
+  search_list
 )
 
 
