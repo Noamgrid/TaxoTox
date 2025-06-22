@@ -261,13 +261,15 @@ JOIN
 JOIN
     species ON tests.species_number = species.species_number -- Join to get species phylum/group
 WHERE
-    results.endpoint LIKE '%EC50%' -- Filter for Endpoint = ED50
+    results.endpoint LIKE '%ED50%' -- Filter for Endpoint = ED50
     AND chemicals.cas_number IN (", cas_list, ") -- Filter for all CAS numbers in p_final vector
     AND species.phylum_division LIKE '%Arthropoda%' -- Filter for Arthropoda
 ORDER BY
     results.conc1_mean;) -- Order results for easier review")
 
 output <- dbGetQuery(conn, mysearch)
+
+str(output)
 
 unique(output$ChemicalName)
 ```
