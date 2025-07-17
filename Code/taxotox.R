@@ -230,6 +230,19 @@ all_cas <- read_csv("../Data/manual_fill.csv") # the ".." - route the path to on
 #R TO SQL
 conn <- dbConnect(RSQLite::SQLite(), "C:/Users/owner/AppData/Local/ECOTOXr/ECOTOXr/Cache/ecotox_ascii_03_13_2025.sqlite")
 
+#for field examintaion:
+#dbListFields(conn, "tests")
+
+#A list of Ecotox organisms groups:
+mysearch <- paste0("SELECT DISTINCT ecotox_group
+FROM species
+ORDER BY ecotox_group;")
+
+unique_ecotox_group <- dbGetQuery(conn, mysearch)
+
+
+#toxicity data search
+
 p_final <- as.vector(all_cas$CASRN) %>%  #save as vector- without "-" (as appear in ecotox)
  gsub("-", "", .)
 
@@ -309,4 +322,97 @@ conc_unit <- dbGetQuery(conn, mysearch)
 conc_unit <- conc_unit %>%
   group_by(Endpoint_Unit) %>%
   summarise(n = n(), .groups = "drop") 
+
+
+
+
+
+#CREATING A FILTERD DATA FOR TOX EVAL OF AQUATIC ORGANISEMS
+
+#FROM result DATAFRAME
+
+mysearch <- paste0("SELECT 
+  r.result_id,
+  r.endpoint,
+  r.trend,
+  r.effect,
+  r.measurement,
+  r.measurement_comments,
+  r.response_site,
+  r.response_site_comments,
+  r.conc1_type,
+  r.conc1_mean_op,
+  r.conc1_mean,
+  r.conc1_min_op,
+  r.conc1_min,
+  r.conc1_max_op,
+  r.conc1_max,
+  r.conc1_unit,
+  r.conc1_comments,
+  r.conc2_type,
+  r.conc2_mean_op,
+  r.conc2_mean,
+  r.conc2_min,
+  r.conc2_max_op,
+  r.conc2_max,
+  r.conc2_unit,
+  r.conc3_type,
+  r.conc3_mean_op,
+  r.conc3_mean,
+  r.conc3_min_op,
+  r.conc3_min,
+  r.conc3_max_op,
+  r.conc3_max,
+  r.conc3_unit,
+  r.conc3_comments,
+  t.test_id,
+  t.reference_number,
+  t.test_cas,
+  s.species,
+  s.ecotox_group,
+  c.chemical_name
+  FROM results r
+  JOIN tests t ON r.test_id = t.test_id
+  JOIN species s ON t.species_number = s.species_number
+  JOIN chemicals c ON t.test_cas = c.cas_number
+  WHERE s.ecotox_group IN ('FishStandard Test Species', 'CrustaceansStandard Test Species', 'AlgaeStandard Test Species');")
+
+filterd_ecotox_data <-dbGetQuery(conn, mysearch) %>% 
+  mutate(across(contains("conc") & !c(ends_with("unit")|ends_with("op")|ends_with("type")|ends_with("comments")), as.numeric))
+
+filterd_ecotox_data_conc_unit <- filterd_ecotox_data %>% 
+  group_by(conc1_unit) %>% 
+  summarise(n())
+
+
+unique(filterd_ecotox_data$conc1_unit)
+
+#filter by ecotox groups
+
+algae <- filterd_ecotox_data %>% 
+  filter(ecotox_group == "AlgaeStandard Test Species")
+
+crustaceans <- filterd_ecotox_data %>% 
+  filter(ecotox_group == "CrustaceansStandard Test Species")
+
+fish <- filterd_ecotox_data %>% 
+  filter(ecotox_group== "FishStandard Test Species")
+
+
+
+
+
   
+  algae_by_count <- algae %>% 
+    group_by(chemical_name) %>% 
+    filter(n() > 3) %>% 
+    ungroup()
+    
+unique(algae_by_count$conc1_unit)
+    
+    
+    
+    ggplot(aes(x=chemical_name, y=conc1_mean))+
+    geom_boxplot()
+
+
