@@ -178,7 +178,7 @@ fuzzy_results <- merge(
 setnames(fuzzy_results, "source_name", "PREFERRED_NAME")
 
 # Combine exact and fuzzy matches
-final__search_results <- rbindlist(
+final_search_results <- rbindlist(
   list(
     exact_matches,
     fuzzy_results[, .(PREFERRED_NAME, CASRN)]
@@ -188,7 +188,7 @@ final__search_results <- rbindlist(
 )
 
 #search CARSN result:
-percentage_found <- round((nrow(final__search_results) * 100 / length(p_vector)), 1)
+percentage_found <- round((nrow(final_search_results) * 100 / length(p_vector)), 1)
 
 #information about first stage- how many found and not found in exact search from NUKA
 print(paste("Number of compounds found in NUKA:", length(p_vector_found), "out of", length(p_vector)))
@@ -198,7 +198,7 @@ print(paste("Number of confirmed fuzzy matches (exact match from DSSTox):", matc
 # Count unexact matches (matches accepted through message box, excluding 100% matches)
 unexact_matches <- sum(matches$confirmed == TRUE & matches$distance > 0, na.rm = TRUE)
 print(paste("Number of unexact matches accepted by user:", unexact_matches))
-print(paste("Total pollutants with CASRN numbers:", nrow(final__search_results), "out of", length(p_vector), "(",percentage_found,"%)"))
+print(paste("Total pollutants with CASRN numbers:", nrow(final_search_results), "out of", length(p_vector), "(",percentage_found,"%)"))
 
 
 
@@ -212,7 +212,7 @@ all_p_df <- data.frame(
 )
 
 # Combine and remove duplicates, keeping original CASRN values when they exist
-manual_fill_df <- bind_rows(final__search_results, all_p_df) %>%
+manual_fill_df <- bind_rows(final_search_results, all_p_df) %>%
   group_by(PREFERRED_NAME) %>%
   summarise(CASRN = ifelse(any(!is.na(CASRN) & CASRN != ""), 
                            first(CASRN[!is.na(CASRN) & CASRN != ""]), 
@@ -249,7 +249,199 @@ p_final <- as.vector(all_cas$CASRN) %>%  #save as vector- without "-" (as appear
 # Convert the vector to a comma-separated string for the SQL IN clause
 cas_list <- paste0("'", p_final, "'", collapse = ", ")
 
-mysearch <- paste0("SELECT
+
+
+
+
+#CREATING A FILTERD DATA FOR TOX EVALUETION OF AQUATIC ORGANISEMS
+
+#combining all relevant columns from result, test and chemical df
+
+mysearch <- paste0("WITH enriched_results AS (
+    SELECT 
+        r.result_id,
+        t.test_id,
+        t.reference_number,
+        t.exposure_type,
+        r.endpoint,
+        r.trend,
+        r.effect,
+        r.conc1_unit,
+        r.measurement,
+        r.measurement_comments,
+        r.conc1_mean,
+        r.conc2_mean,
+        r.conc3_mean,
+        r.conc1_min,
+        r.conc1_max,
+        s.species,
+        s.ecotox_group,
+        c.chemical_name,
+        -- Step 1: compute adjusted conc1_mean
+        CASE 
+            WHEN (r.conc1_mean IS NULL OR r.conc1_mean <= 0) 
+                 AND r.conc1_min > 0 AND r.conc1_max > 0 
+            THEN (r.conc1_min + r.conc1_max) / 2.0
+            ELSE r.conc1_mean
+        END AS calc_conc1_mean
+    FROM results r
+    JOIN tests t ON r.test_id = t.test_id
+    JOIN species s ON t.species_number = s.species_number
+    JOIN chemicals c ON t.test_cas = c.cas_number
+)
+
+SELECT 
+    er.result_id,
+
+    -- Step 2: calculate min_concentration using calc_conc1_mean
+    CASE 
+        WHEN er.calc_conc1_mean > 0 AND er.conc2_mean > 0 AND er.conc3_mean > 0 THEN
+            CASE 
+                WHEN er.calc_conc1_mean <= er.conc2_mean AND er.calc_conc1_mean <= er.conc3_mean THEN er.calc_conc1_mean
+                WHEN er.conc2_mean <= er.conc3_mean THEN er.conc2_mean
+                ELSE er.conc3_mean
+            END
+        WHEN er.calc_conc1_mean > 0 AND er.conc2_mean > 0 THEN
+            CASE WHEN er.calc_conc1_mean <= er.conc2_mean THEN er.calc_conc1_mean ELSE er.conc2_mean END
+        WHEN er.calc_conc1_mean > 0 AND er.conc3_mean > 0 THEN
+            CASE WHEN er.calc_conc1_mean <= er.conc3_mean THEN er.calc_conc1_mean ELSE er.conc3_mean END
+        WHEN er.conc2_mean > 0 AND er.conc3_mean > 0 THEN
+            CASE WHEN er.conc2_mean <= er.conc3_mean THEN er.conc2_mean ELSE er.conc3_mean END
+        WHEN er.calc_conc1_mean > 0 THEN er.calc_conc1_mean
+        WHEN er.conc2_mean > 0 THEN er.conc2_mean
+        WHEN er.conc3_mean > 0 THEN er.conc3_mean
+        ELSE NULL
+    END AS min_concentration,
+    
+    er.endpoint,
+    er.trend,
+    er.effect,
+    er.exposure_type,
+    er.measurement,
+    er.measurement_comments,
+    er.test_id,
+    er.reference_number,
+    er.conc1_unit,
+    t.test_cas,
+    er.species,
+    
+    CASE 
+        WHEN LOWER(er.ecotox_group) LIKE '%fish%' THEN 'fish'
+        WHEN LOWER(er.ecotox_group) LIKE '%algae%' THEN 'algae'
+        WHEN LOWER(er.ecotox_group) LIKE '%crustacean%' THEN 'crustacean'
+        ELSE er.ecotox_group
+    END AS ecotox_group,
+    
+    er.chemical_name
+
+FROM enriched_results er
+JOIN tests t ON er.test_id = t.test_id
+
+WHERE LOWER(er.ecotox_group) LIKE '%fish%' 
+   OR LOWER(er.ecotox_group) LIKE '%algae%' 
+   OR LOWER(er.ecotox_group) LIKE '%crustacean%';
+")
+
+
+filterd_ecotox_data <-dbGetQuery(conn, mysearch)
+
+
+#unit analysis- what is relevent
+relevent_units <- c("ng/L", "ug/L", "mg/L", "g/L")  
+  
+  
+filterd_ecotox_data_conc_unit <- filterd_ecotox_data %>%
+  mutate(
+    conc1_unit = str_remove(conc1_unit, c("^AI\\s*")), # we assume that the lab mesures for active indgredient and not product
+         conc1_unit = str_replace_all(conc1_unit, "\\bdm3\\b", "L"),
+         conc1_unit = str_replace_all(conc1_unit, "ppt", "ng/L"), 
+# This SQL will help you find publication to understand wht ppm mean
+#  SELECT 
+#  t.test_cas,
+#  r.conc1_unit,
+#  ref.title
+#FROM results r
+#JOIN tests t ON r.test_id = t.test_id
+#JOIN [references] ref ON t.reference_number = ref.reference_number
+#WHERE r.conc1_unit LIKE '%ppm%';
+         conc1_unit = str_replace_all(conc1_unit, "ppm", "mg/L"),
+         conc1_unit = str_replace_all(conc1_unit, "ppb", "ug/L"),
+         conc1_unit = str_replace_all(conc1_unit, "0/00", "g/L")
+         ) %>%
+  filter(conc1_unit %in% relevent_units)
+
+
+
+conversion_df <- tibble(
+  conc1_unit = relevent_units,
+  factor_to_ng_L = c(1, 1e3, 1e6, 1e9)
+)
+
+
+irelevant_endpoints = c("NOEC","NR","LOEC","BCF","NOEL","NR-LETH","NR-ZERO","LOEL","LT50")
+
+
+
+final_ecotox_data <- filterd_ecotox_data_conc_unit %>% 
+  left_join(conversion_df, by = "conc1_unit") %>%
+  mutate(min_concentration = as.numeric(min_concentration)) %>% 
+  mutate(conc_ng_L = min_concentration * factor_to_ng_L) %>% 
+  mutate(endpoint = str_replace_all(endpoint, "[*/]", "")) %>% 
+  filter(!endpoint %in% irelevant_endpoints) %>% 
+  mutate(effect = str_replace_all(effect, "[~/]", "")) %>% 
+  filter(effect %in% ef)
+
+
+
+
+
+
+
+#filter by ecotox groups
+
+algae <- ec50 %>% 
+  filter(ecotox_group == "AlgaeStandard Test Species")
+
+length(unique(algae$species))
+
+
+
+crustaceans <- filterd_ecotox_data %>% 
+  filter(ecotox_group == "CrustaceansStandard Test Species")
+
+length(unique(crustaceans$chemical_name))
+length(unique(crustaceans$reference_number))
+length(unique(crustaceans$species))
+
+
+fish <- filterd_ecotox_data %>% 
+  filter(ecotox_group== "FishStandard Test Species")
+
+length(unique(fish$chemical_name))
+length(unique(fish$reference_number))
+length(unique(fish$species))
+
+
+
+  
+  algae_by_count <- algae %>% 
+    group_by(chemical_name) %>% 
+    filter(n() > 3) %>% 
+    ungroup()
+    
+unique(algae_by_count$conc1_unit)
+    
+    
+    
+    ggplot(aes(x=chemical_name, y=conc1_mean))+
+    geom_boxplot()
+
+
+
+    
+###################################old search
+    
+    mysearch <- paste0("SELECT
     -- Select the relevant endpoint concentration, unit and measurment columns
     results.conc1_mean AS Endpoint_Concentration,
     results.conc1_unit AS Endpoint_Unit,
@@ -288,22 +480,22 @@ WHERE
     AND (results.effect LIKE '%ITX%' OR '%MOR%')
 ORDER BY
     results.conc1_mean -- Order results for easier review")
-
-output <- dbGetQuery(conn, mysearch) 
-
-output <- output %>%  
-  group_by(Endpoint, Effect, Measurement) %>%
-  summarise(n = n(), .groups = "drop") 
-
-unique(output$ChemicalName)
-
-
-
-
-
-
-###  Filtering the unit that are used in test of aqueous organisms
-mysearch <- paste0("SELECT
+    
+    output <- dbGetQuery(conn, mysearch) 
+    
+    output <- output %>%  
+      group_by(Endpoint, Effect, Measurement) %>%
+      summarise(n = n(), .groups = "drop") 
+    
+    unique(output$ChemicalName)
+    
+    
+    
+    
+    
+    
+    ###  Filtering the unit that are used in test of aqueous organisms
+    mysearch <- paste0("SELECT
     results.conc1_unit AS Endpoint_Unit
 FROM
     results
@@ -315,104 +507,12 @@ WHERE
     species.ecotox_group LIKE '%Crustacea%' 
     OR species.ecotox_group LIKE '%Algae%' 
     OR species.ecotox_group LIKE '%Fish%'")
-
-
-conc_unit <- dbGetQuery(conn, mysearch)
-
-conc_unit <- conc_unit %>%
-  group_by(Endpoint_Unit) %>%
-  summarise(n = n(), .groups = "drop") 
-
-
-
-
-
-#CREATING A FILTERD DATA FOR TOX EVAL OF AQUATIC ORGANISEMS
-
-#FROM result DATAFRAME
-
-mysearch <- paste0("SELECT 
-  r.result_id,
-  r.endpoint,
-  r.trend,
-  r.effect,
-  r.measurement,
-  r.measurement_comments,
-  r.response_site,
-  r.response_site_comments,
-  r.conc1_type,
-  r.conc1_mean_op,
-  r.conc1_mean,
-  r.conc1_min_op,
-  r.conc1_min,
-  r.conc1_max_op,
-  r.conc1_max,
-  r.conc1_unit,
-  r.conc1_comments,
-  r.conc2_type,
-  r.conc2_mean_op,
-  r.conc2_mean,
-  r.conc2_min,
-  r.conc2_max_op,
-  r.conc2_max,
-  r.conc2_unit,
-  r.conc3_type,
-  r.conc3_mean_op,
-  r.conc3_mean,
-  r.conc3_min_op,
-  r.conc3_min,
-  r.conc3_max_op,
-  r.conc3_max,
-  r.conc3_unit,
-  r.conc3_comments,
-  t.test_id,
-  t.reference_number,
-  t.test_cas,
-  s.species,
-  s.ecotox_group,
-  c.chemical_name
-  FROM results r
-  JOIN tests t ON r.test_id = t.test_id
-  JOIN species s ON t.species_number = s.species_number
-  JOIN chemicals c ON t.test_cas = c.cas_number
-  WHERE s.ecotox_group IN ('FishStandard Test Species', 'CrustaceansStandard Test Species', 'AlgaeStandard Test Species');")
-
-filterd_ecotox_data <-dbGetQuery(conn, mysearch) %>% 
-  mutate(across(contains("conc") & !c(ends_with("unit")|ends_with("op")|ends_with("type")|ends_with("comments")), as.numeric))
-
-filterd_ecotox_data_conc_unit <- filterd_ecotox_data %>% 
-  group_by(conc1_unit) %>% 
-  summarise(n())
-
-
-unique(filterd_ecotox_data$conc1_unit)
-
-#filter by ecotox groups
-
-algae <- filterd_ecotox_data %>% 
-  filter(ecotox_group == "AlgaeStandard Test Species")
-
-crustaceans <- filterd_ecotox_data %>% 
-  filter(ecotox_group == "CrustaceansStandard Test Species")
-
-fish <- filterd_ecotox_data %>% 
-  filter(ecotox_group== "FishStandard Test Species")
-
-
-
-
-
-  
-  algae_by_count <- algae %>% 
-    group_by(chemical_name) %>% 
-    filter(n() > 3) %>% 
-    ungroup()
-    
-unique(algae_by_count$conc1_unit)
     
     
+    conc_unit <- dbGetQuery(conn, mysearch)
     
-    ggplot(aes(x=chemical_name, y=conc1_mean))+
-    geom_boxplot()
-
-
+    conc_unit <- conc_unit %>%
+      group_by(Endpoint_Unit) %>%
+      summarise(n = n(), .groups = "drop") 
+    
+    
