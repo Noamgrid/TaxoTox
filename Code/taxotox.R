@@ -27,53 +27,37 @@ library(fst)
 library(tcltk)
 library(ECOTOXr)
 
+#functions:
+#######################################################################
+##load_file_as_df =  the user way to path to its data, various formats (xlsx, txt, delim)
 
-# Step 1 - Data loading and arrangment
-## example data - the green basine project, paths will have to become relative
+load_file_as_df <- function() {
+  # Required packages
+  if (!requireNamespace("readxl", quietly = TRUE)) {
+    install.packages("readxl")
+  }
+  
+  file_path <- choose.files()
+  
+  # Extract file extension
+  ext <- tools::file_ext(file_path)
+  
+  # Load based on file type
+  df <- switch(tolower(ext),
+               "csv" = read.csv(file_path, stringsAsFactors = FALSE),
+               "txt" = read.delim(file_path, stringsAsFactors = FALSE),
+               "tsv" = read.delim(file_path, sep = "\t", stringsAsFactors = FALSE),
+               "xls" = readxl::read_excel(file_path),
+               "xlsx" = readxl::read_excel(file_path),
+               stop("Unsupported file type: ", ext)
+  )
+  
+  return(df)
+}
 
-GB <- read.xlsx("C:/Users/owner/OneDrive - huji.ac.il/PhD/reports/GreenBasine/CW_nabulus_raw.xlsx")
+#######################################################################
 
-gb_p <- GB %>% 
-  select(1, 4, 21:ncol(.)) %>% 
-  mutate(across(3:ncol(.), ~as.numeric(.) %>% replace_na(0))) %>% 
-  filter(rowSums(across(3:ncol(.))) > 0) %>% 
-  pivot_longer(cols = 3:length(.), names_to = "PREFERRED_NAME", values_to = "Concentration") %>% 
-  pivot_wider(names_from = c(1,2), values_from = Concentration)
-
-# NUKA data - 2500 relevant organic pollutants in the EU and their CASRN
-
-NUKA <- read.fst("C:/Users/owner/Desktop/TaxoTox/Data/NUKA.fst") %>% 
-  rename("CASRN" = CAS)
-
-# DSSTox - database of over million pollutants, their names and IUPAC names (updating DB, needs to create a new table each time)
-DSSTox <- read.fst("C:/Users/owner/Desktop/DSSTox.fst")
-
-Internal_data <- gb_p # The user's data
-
-# Convert to data.table for more efficient operations
-setDT(NUKA)
-setDT(DSSTox)
-setDT(Internal_data)
-
-
-
-
-
-# Step 2 - CASRN search
-
-p_vector <- Internal_data[[1]] # Create a vector of compounds from the user's data for CAS search
-
-## First search - NUKA (exact matches)
-internal_list <- NUKA[NUKA$PREFERRED_NAME %in% p_vector, ]
-p_vector_found <- internal_list$PREFERRED_NAME # Creating a vector of all pollutants that were found
-unfound <- p_vector[!p_vector %in% p_vector_found] # Saving the pollutants that weren't found in NUKA for further search in DSSTox
-
-# Create a data.table for unfounded pollutants for easier manipulation
-unfound_dt <- data.table(PREFERRED_NAME = unfound)
-
-
-# Second search - DSSTox (fuzzy)
-# Interactive fuzzy matching function 
+# fuzzy_match_interactive = Interactive fuzzy matching function (for DSSTox search)
 fuzzy_match_interactive <- function(source_names, target_dt, match_col, threshold = 0.05, confirm_threshold = 0.01) {
   result <- data.table(
     source_name = source_names,
@@ -145,115 +129,82 @@ fuzzy_match_interactive <- function(source_names, target_dt, match_col, threshol
   return(result)
 }
 
+#######################################################################
 
-# Run the interactive matching
-matches <- fuzzy_match_interactive(
-  unfound,
-  DSSTox, 
-  "PREFERRED_NAME",
-  threshold = 0.1,      # Maximum allowed distance - needs to be defind by the user?
-  confirm_threshold = 0  # Auto-accept 
-)
+#add_casrn_interactive = window popup massage for manually insert the unfound contaminants CASRN for further ECOTOX search
 
+add_casrn_interactive <- function(compounds_df, casrn_column = "CASRN", compound_column = "PREFERRED_NAME") {
+  result_df <- compounds_df
+  
+  # Find rows where CASRN is missing
+  missing_casrn <- is.na(result_df[[casrn_column]]) | result_df[[casrn_column]] == ""
+  missing_indices <- which(missing_casrn)
+  
+  if (length(missing_indices) == 0) {
+    tcltk::tkmessageBox(
+      title = "Complete",
+      message = "All compounds already have CASRN numbers!",
+      icon = "info",
+      type = "ok"
+    )
+    return(result_df)
+  }
+  
+  for (i in missing_indices) {
+    compound_name <- result_df[i, compound_column]
+    
+    # Create input dialog for CASRN
+    tt <- tcltk::tktoplevel()
+    tcltk::tkwm.title(tt, "Enter CASRN")
+    
+    tcltk::tklabel(tt, text = paste("Compound:", compound_name)) %>%
+      tcltk::tkpack(pady = 5)
+    
+    tcltk::tklabel(tt, text = "Enter CASRN number:") %>%
+      tcltk::tkpack()
+    
+    casrn_var <- tcltk::tclVar("")
+    entry_widget <- tcltk::tkentry(tt, textvariable = casrn_var, width = 30)
+    tcltk::tkpack(entry_widget, pady = 5)
+    
+    # Buttons
+    button_frame <- tcltk::tkframe(tt)
+    tcltk::tkpack(button_frame, pady = 10)
+    
+    saved <- FALSE
+    
+    ok_button <- tcltk::tkbutton(button_frame, text = "Save", command = function() {
+      casrn_value <- tcltk::tclvalue(casrn_var)
+      if (casrn_value != "") {
+        result_df[i, casrn_column] <<- casrn_value
+        saved <<- TRUE
+      }
+      tcltk::tkdestroy(tt)
+    })
+    
+    skip_button <- tcltk::tkbutton(button_frame, text = "Skip", command = function() {
+      tcltk::tkdestroy(tt)
+    })
+    
+    tcltk::tkpack(ok_button, side = "left", padx = 5)
+    tcltk::tkpack(skip_button, side = "right", padx = 5)
+    
+    tcltk::tkwait.window(tt)
+    
+    if (saved) {
+      cat(paste("CASRN added for", compound_name, "\n"))
+    }
+  }
+  
+  return(result_df)
+}
 
-# Create final result data.table with CASRN numbers
-# First, get the CASRN numbers for exact matches from NUKA
-exact_matches <- NUKA[PREFERRED_NAME %in% p_vector_found, .(PREFERRED_NAME, CASRN)]
+#######################################################################
 
-# Then get CASRN numbers for fuzzy matches from DSSTox
-fuzzy_confirmed <- matches[confirmed == TRUE]
-fuzzy_matches <- DSSTox[DSSTox$PREFERRED_NAME %in% fuzzy_confirmed$matched_name, 
-                        .(PREFERRED_NAME, CASRN)]
-
-# Map the original names to the matched DSSTox names to get CASRN numbers
-fuzzy_results <- merge(
-  fuzzy_confirmed[, .(source_name, matched_name)],
-  fuzzy_matches,
-  by.x = "matched_name",
-  by.y = "PREFERRED_NAME",
-  all.x = TRUE
-)
-
-# Rename columns for consistency
-setnames(fuzzy_results, "source_name", "PREFERRED_NAME")
-
-# Combine exact and fuzzy matches
-final_search_results <- rbindlist(
-  list(
-    exact_matches,
-    fuzzy_results[, .(PREFERRED_NAME, CASRN)]
-  ),
-  use.names = TRUE,
-  fill = TRUE
-)
-
-#search CARSN result:
-percentage_found <- round((nrow(final_search_results) * 100 / length(p_vector)), 1)
-
-#information about first stage- how many found and not found in exact search from NUKA
-print(paste("Number of compounds found in NUKA:", length(p_vector_found), "out of", length(p_vector)))
-# Count confirmed matches
-match_count <- sum(matches$confirmed, na.rm = TRUE)
-print(paste("Number of confirmed fuzzy matches (exact match from DSSTox):", match_count))
-# Count unexact matches (matches accepted through message box, excluding 100% matches)
-unexact_matches <- sum(matches$confirmed == TRUE & matches$distance > 0, na.rm = TRUE)
-print(paste("Number of unexact matches accepted by user:", unexact_matches))
-print(paste("Total pollutants with CASRN numbers:", nrow(final_search_results), "out of", length(p_vector), "(",percentage_found,"%)"))
-
-
-
-
-# Step 3 - Auto fill of the rest of the pollutnat's CASRN
-
-all_p_df <- data.frame(
-  PREFERRED_NAME = p_vector,
-  CASRN = NA,
-  stringsAsFactors = FALSE
-)
-
-# Combine and remove duplicates, keeping original CASRN values when they exist
-manual_fill_df <- bind_rows(final_search_results, all_p_df) %>%
-  group_by(PREFERRED_NAME) %>%
-  summarise(CASRN = ifelse(any(!is.na(CASRN) & CASRN != ""), 
-                           first(CASRN[!is.na(CASRN) & CASRN != ""]), 
-                           ""), 
-            .groups = 'drop')
-
-#write.csv(manual_fill_df, "manual_fill.csv") #fill
-all_cas <- read_csv("../Data/manual_fill.csv") # the ".." - route the path to one directory level higher 
-
-
-
-
-# Step 4 - Ecotox toxicity value search
+#Filtering and treating ECOTOX data for aquatic organisms, relevant units and saving the filtered data as csv for quicker search - RUN ONCE IN 3 MONTHS
 
 #R TO SQL
 conn <- dbConnect(RSQLite::SQLite(), "C:/Users/owner/AppData/Local/ECOTOXr/ECOTOXr/Cache/ecotox_ascii_03_13_2025.sqlite")
-
-#for field examintaion:
-#dbListFields(conn, "tests")
-
-#A list of Ecotox organisms groups:
-mysearch <- paste0("SELECT DISTINCT ecotox_group
-FROM species
-ORDER BY ecotox_group;")
-
-unique_ecotox_group <- dbGetQuery(conn, mysearch)
-
-
-#toxicity data search
-
-p_final <- as.vector(all_cas$CASRN) %>%  #save as vector- without "-" (as appear in ecotox)
- gsub("-", "", .)
-
-# Convert the vector to a comma-separated string for the SQL IN clause
-cas_list <- paste0("'", p_final, "'", collapse = ", ")
-
-
-
-
-
-#CREATING A FILTERD DATA FOR TOX EVALUETION OF AQUATIC ORGANISEMS
 
 #combining all relevant columns from result, test and chemical df
 
@@ -277,6 +228,7 @@ mysearch <- paste0("WITH enriched_results AS (
         s.species,
         s.ecotox_group,
         c.chemical_name,
+        c.cas_number,
         -- Step 1: compute adjusted conc1_mean
         CASE 
             WHEN (r.conc1_mean IS NULL OR r.conc1_mean <= 0) 
@@ -314,6 +266,7 @@ SELECT
     END AS min_concentration,
     
     er.endpoint,
+    er.cas_number,
     er.trend,
     er.effect,
     er.exposure_type,
@@ -343,44 +296,27 @@ WHERE LOWER(er.ecotox_group) LIKE '%fish%'
 ")
 
 
-filterd_ecotox_data <-dbGetQuery(conn, mysearch)
+filterd_ecotox_data <-dbGetQuery(conn, mysearch) #creats a table of all endpoints for fish, algae and crustacean
 
-
-#unit analysis- what is relevent
 relevent_units <- c("ng/L", "ug/L", "mg/L", "g/L")  
-  
-  
-filterd_ecotox_data_conc_unit <- filterd_ecotox_data %>%
+
+filterd_ecotox_data_conc_unit <- filterd_ecotox_data %>% #filtering for relevant concentration units (dissolved)
   mutate(
-    conc1_unit = str_remove(conc1_unit, c("^AI\\s*")), # we assume that the lab mesures for active indgredient and not product
-         conc1_unit = str_replace_all(conc1_unit, "\\bdm3\\b", "L"),
-         conc1_unit = str_replace_all(conc1_unit, "ppt", "ng/L"), 
-# This SQL will help you find publication to understand wht ppm mean
-#  SELECT 
-#  t.test_cas,
-#  r.conc1_unit,
-#  ref.title
-#FROM results r
-#JOIN tests t ON r.test_id = t.test_id
-#JOIN [references] ref ON t.reference_number = ref.reference_number
-#WHERE r.conc1_unit LIKE '%ppm%';
-         conc1_unit = str_replace_all(conc1_unit, "ppm", "mg/L"),
-         conc1_unit = str_replace_all(conc1_unit, "ppb", "ug/L"),
-         conc1_unit = str_replace_all(conc1_unit, "0/00", "g/L")
-         ) %>%
+    conc1_unit = str_remove(conc1_unit, c("^AI\\s*")), # we assume that the lab measure for active ingredient and not product
+    conc1_unit = str_replace_all(conc1_unit, "\\bdm3\\b", "L"),
+    conc1_unit = str_replace_all(conc1_unit, "ppt", "ng/L"), 
+    conc1_unit = str_replace_all(conc1_unit, "ppm", "mg/L"),
+    conc1_unit = str_replace_all(conc1_unit, "ppb", "ug/L"),
+    conc1_unit = str_replace_all(conc1_unit, "0/00", "g/L")
+  ) %>%
   filter(conc1_unit %in% relevent_units)
-
-
 
 conversion_df <- tibble(
   conc1_unit = relevent_units,
   factor_to_ng_L = c(1, 1e3, 1e6, 1e9)
 )
 
-
-irelevant_endpoints = c("NOEC","NR","LOEC","BCF","NOEL","NR-LETH","NR-ZERO","LOEL","LT50")
-
-
+irelevant_endpoints = c("NOEC","NR","LOEC","BCF","NOEL","NR-LETH","NR-ZERO","LOEL","LT50") #filtering the relevant endpoints for toxicity assessment
 
 final_ecotox_data <- filterd_ecotox_data_conc_unit %>% 
   left_join(conversion_df, by = "conc1_unit") %>%
@@ -388,131 +324,246 @@ final_ecotox_data <- filterd_ecotox_data_conc_unit %>%
   mutate(conc_ng_L = min_concentration * factor_to_ng_L) %>% 
   mutate(endpoint = str_replace_all(endpoint, "[*/]", "")) %>% 
   filter(!endpoint %in% irelevant_endpoints) %>% 
-  mutate(effect = str_replace_all(effect, "[~/]", "")) %>% 
-  filter(effect %in% ef)
+  mutate(effect = str_replace_all(effect, "[~/]", ""))
+
+
+write.csv(final_ecotox_data, "../Data/final_ecotox_data.csv")
+
+###############################################################################
+
+
+
+
+
+# T A X O T O X
+
+
+
+
+# Step 1 - Data loading and arrangement
+
+NUKA <- read.fst("../Data/NUKA.fst") %>% # NUKA data - 2500 relevant organic pollutants in the EU and their CASRN
+  rename("CASRN" = CAS)
+
+DSSTox <- read.fst("C:/Users/owner/Desktop/DSSTox.fst") # DSSTox - database of over million pollutants, their names and IUPAC names (updating DB, needs to create a new table each time)- outside the taxotox file so full path is needed
+
+
+Internal_data <- load_file_as_df() #user's data
+
+setDT(NUKA) # Convert to data.table for more efficient operations
+setDT(DSSTox)
+setDT(Internal_data)
+
+
+
+
+
+# Step 2 - CASRN search
+
+p_vector <- Internal_data[[1]] # Create a vector of compounds from the user's data for CAS search
+
+## First search - NUKA (exact matches)
+internal_list <- NUKA[NUKA$PREFERRED_NAME %in% p_vector, ]
+p_vector_found <- internal_list$PREFERRED_NAME # Creating a vector of all pollutants that were found
+unfound <- p_vector[!p_vector %in% p_vector_found] # Saving the pollutants that weren't found in NUKA for further search in DSSTox
+
+# Create a data.table for unfounded pollutants for easier manipulation
+unfound_dt <- data.table(PREFERRED_NAME = unfound)
+
+# Second search - DSSTox (fuzzy)
+# Run the interactive matching
+matches <- fuzzy_match_interactive(
+  unfound,
+  DSSTox, 
+  "PREFERRED_NAME",
+  threshold = 0.1,      # Maximum allowed distance - needs to be defined by the user?
+  confirm_threshold = 0  # Auto-accept 
+)
+
+# Create final result data.table with CASRN numbers
+# First, get the CASRN numbers for exact matches from NUKA
+exact_matches <- NUKA[PREFERRED_NAME %in% p_vector_found, .(PREFERRED_NAME, CASRN)]
+
+# Then get CASRN numbers for fuzzy matches from DSSTox
+fuzzy_confirmed <- matches[confirmed == TRUE]
+fuzzy_matches <- DSSTox[DSSTox$PREFERRED_NAME %in% fuzzy_confirmed$matched_name, 
+                        .(PREFERRED_NAME, CASRN)]
+
+# Map the original names to the matched DSSTox names to get CASRN numbers
+fuzzy_results <- merge(
+  fuzzy_confirmed[, .(source_name, matched_name)],
+  fuzzy_matches,
+  by.x = "matched_name",
+  by.y = "PREFERRED_NAME",
+  all.x = TRUE
+)
+
+# Rename columns for consistency
+setnames(fuzzy_results, "source_name", "PREFERRED_NAME")
+
+# Combine exact and fuzzy matches
+final_search_results <- rbindlist(
+  list(
+    exact_matches,
+    fuzzy_results[, .(PREFERRED_NAME, CASRN)]
+  ),
+  use.names = TRUE,
+  fill = TRUE
+)
+
+#search CASRN result:
+percentage_found <- round((nrow(final_search_results) * 100 / length(p_vector)), 1)
+
+#information about first stage- how many found and not found in exact search from NUKA
+print(paste("Number of compounds found in NUKA:", length(p_vector_found), "out of", length(p_vector)))
+# Count confirmed matches
+match_count <- sum(matches$confirmed, na.rm = TRUE)
+print(paste("Number of confirmed fuzzy matches (exact match from DSSTox):", match_count))
+# Count unexact matches (matches accepted through message box, excluding 100% matches)
+unexact_matches <- sum(matches$confirmed == TRUE & matches$distance > 0, na.rm = TRUE)
+print(paste("Number of unexact matches accepted by user:", unexact_matches))
+print(paste("Total pollutants with CASRN numbers:", nrow(final_search_results), "out of", length(p_vector), "(",percentage_found,"%)"))
 
 
 
 
 
 
+# Step 3 - Interactive fill the rest of pollutant's CASRN
+all_p_df <- data.frame(
+  PREFERRED_NAME = p_vector,
+  CASRN = NA,
+  stringsAsFactors = FALSE
+)
 
-#filter by ecotox groups
+# Combine and remove duplicates
+all_cas <- bind_rows(final_search_results, all_p_df) %>%
+  group_by(PREFERRED_NAME) %>%
+  summarise(CASRN = ifelse(any(!is.na(CASRN) & CASRN != ""), 
+                           first(CASRN[!is.na(CASRN) & CASRN != ""]), 
+                           ""), 
+            .groups = 'drop')
 
-algae <- ec50 %>% 
-  filter(ecotox_group == "AlgaeStandard Test Species")
-
-length(unique(algae$species))
-
-
-
-crustaceans <- filterd_ecotox_data %>% 
-  filter(ecotox_group == "CrustaceansStandard Test Species")
-
-length(unique(crustaceans$chemical_name))
-length(unique(crustaceans$reference_number))
-length(unique(crustaceans$species))
-
-
-fish <- filterd_ecotox_data %>% 
-  filter(ecotox_group== "FishStandard Test Species")
-
-length(unique(fish$chemical_name))
-length(unique(fish$reference_number))
-length(unique(fish$species))
-
-
-
+# Interactive CASRN addition
+all_cas <- add_casrn_interactive(all_cas) %>% 
+  mutate(
+    CASRN = gsub("-", "", CASRN),                   
+    cas_number = as.numeric(CASRN)                  
+  ) %>% 
+  select(-CASRN)
   
-  algae_by_count <- algae %>% 
-    group_by(chemical_name) %>% 
-    filter(n() > 3) %>% 
-    ungroup()
-    
-unique(algae_by_count$conc1_unit)
-    
-    
-    
-    ggplot(aes(x=chemical_name, y=conc1_mean))+
-    geom_boxplot()
+all_cas <- read_csv("../Data/manual_fill.csv") %>%  ##### TEMPORARY- manually filled data to skip the pop-up messages
+  mutate(
+    CASRN = gsub("-", "", CASRN),                   
+    cas_number = as.numeric(CASRN)                  
+  ) %>% 
+  select(-CASRN)
+
+p_final <- as.vector(all_cas$CASRN) %>%  #save as vector- without "-" (as appear in ecotox)
+  gsub("-", "", .)
 
 
 
-    
-###################################old search
-    
-    mysearch <- paste0("SELECT
-    -- Select the relevant endpoint concentration, unit and measurment columns
-    results.conc1_mean AS Endpoint_Concentration,
-    results.conc1_unit AS Endpoint_Unit,
-    results.endpoint AS Endpoint,
-    results.measurement AS Measurement,
-    results.effect AS Effect,
-    tests.test_type AS TestType,
-    
-    -- Select details about the chemical
-    chemicals.chemical_name AS ChemicalName,
-    chemicals.cas_number AS CAS_Number,
-    
-    -- Select details about the organism
-    species.common_name AS OrganismCommonName,
-    species.latin_name AS OrganismLatinName,
-    species.phylum_division AS OrganismPhylum,
-    species.ecotox_group AS SpeciesGroup,
-    
-    -- Select details about the test
-    tests.test_id AS TestID,
-    results.result_id AS ResultID
-    
-FROM
-    results -- Start with the results table where ED50 data is found
-JOIN
-    tests ON results.test_id = tests.test_id -- Join to get test details, chemical CAS, and species number
-JOIN
-    chemicals ON tests.test_cas = chemicals.cas_number -- Join to get chemical name from CAS number
-JOIN
-    species ON tests.species_number = species.species_number -- Join to get species phylum/group
-WHERE
-    chemicals.cas_number IN (", cas_list, ")
-    AND species.ecotox_group LIKE '%Crustacea%'
-    AND (results.endpoint LIKE '%EC50%' OR results.endpoint LIKE '%LC50%')
-    AND (results.measurement LIKE '%IMBL%' OR '%MORT%' OR '%SURV%')
-    AND (results.effect LIKE '%ITX%' OR '%MOR%')
-ORDER BY
-    results.conc1_mean -- Order results for easier review")
-    
-    output <- dbGetQuery(conn, mysearch) 
-    
-    output <- output %>%  
-      group_by(Endpoint, Effect, Measurement) %>%
-      summarise(n = n(), .groups = "drop") 
-    
-    unique(output$ChemicalName)
-    
-    
-    
-    
-    
-    
-    ###  Filtering the unit that are used in test of aqueous organisms
-    mysearch <- paste0("SELECT
-    results.conc1_unit AS Endpoint_Unit
-FROM
-    results
-JOIN
-    tests ON results.test_id = tests.test_id
-JOIN
-    species ON tests.species_number = species.species_number
-WHERE
-    species.ecotox_group LIKE '%Crustacea%' 
-    OR species.ecotox_group LIKE '%Algae%' 
-    OR species.ecotox_group LIKE '%Fish%'")
-    
-    
-    conc_unit <- dbGetQuery(conn, mysearch)
-    
-    conc_unit <- conc_unit %>%
-      group_by(Endpoint_Unit) %>%
-      summarise(n = n(), .groups = "drop") 
-    
-    
+
+
+
+
+# Step 4 - ECOTOX endpoint value search
+
+final_ecotox_data <- read.csv("../Data/final_ecotox_data.csv")
+
+
+endpoint_data <- final_ecotox_data %>% #filtering ECOTOX data according to the user's CASRN
+  filter(cas_number %in% p_final)
+
+endpoint_data_algae <- endpoint_data %>% 
+  filter(ecotox_group == "algae") %>% 
+  left_join(all_cas) %>% 
+  group_by(PREFERRED_NAME, cas_number) %>%  #, ecotox_group) %>% 
+  summarise(
+    median_conc = median(conc_ng_L, na.rm = TRUE),
+    #count = sum(!is.na(conc_ng_L)),
+    .groups = "drop"
+  )
+
+endpoint_data_crustacean <- endpoint_data %>% 
+  filter(ecotox_group == "crustacean") %>% 
+  left_join(all_cas) %>% 
+  group_by(PREFERRED_NAME, cas_number) %>% #, ecotox_group) %>% 
+  summarise(
+    median_conc = median(conc_ng_L, na.rm = TRUE),
+    #count = sum(!is.na(conc_ng_L)),
+    .groups = "drop"
+  )
+
+endpoint_data_fish <- endpoint_data %>% 
+  filter(ecotox_group == "fish") %>% 
+  left_join(all_cas) %>% 
+  group_by(PREFERRED_NAME, cas_number) %>% #, ecotox_group) %>% 
+  summarise(
+    median_conc = median(conc_ng_L, na.rm = TRUE),
+   # count = sum(!is.na(conc_ng_L)),
+    .groups = "drop"
+  )
+
+
+
+
+
+
+# Step 5 - Toxicity calculations:
+
+
+tox_cal_algae <- endpoint_data_algae %>% 
+  left_join(Internal_data, by = "PREFERRED_NAME") %>% 
+  mutate(across(4:length(.), ~ .x / median_conc)) %>%  # Divide each column by conc_ng_L median value
+  select(-c(cas_number, median_conc)) %>% 
+  pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>% 
+  pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>% 
+  rowwise() %>%
+  mutate(RQtg = sum(c_across(where(is.numeric)), na.rm = TRUE)) %>%
+  ungroup()
+ 
+tox_cal_crustacean <- endpoint_data_crustacean %>% 
+  left_join(Internal_data, by = "PREFERRED_NAME") %>% 
+  mutate(across(4:length(.), ~ .x / median_conc)) %>%  # Divide each column by conc_ng_L median value
+  select(-c(cas_number, median_conc)) %>% 
+  pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>% 
+  pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>% 
+  rowwise() %>%
+  mutate(RQtg = sum(c_across(where(is.numeric)), na.rm = TRUE)) %>%
+  ungroup()
+
+tox_cal_fish <- endpoint_data_fish %>% 
+  left_join(Internal_data, by = "PREFERRED_NAME") %>% 
+  mutate(across(4:length(.), ~ .x / median_conc)) %>%  # Divide each column by conc_ng_L median value
+  select(-c(cas_number, median_conc)) %>% 
+  pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>% 
+  pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>% 
+  rowwise() %>%
+  mutate(RQtg = sum(c_across(where(is.numeric)), na.rm = TRUE)) %>%
+  ungroup()
+
+
+
+
+
+
+
+#data visalization:
+
+algea_box <- endpoint_data_algae %>% 
+  ggplot(aes(x = PREFERRED_NAME, y = conc_ng_L)) +
+  geom_boxplot()
+
+
+crustacean_box <- endpoint_data_crustacean %>% 
+  ggplot(aes(x = PREFERRED_NAME, y = conc_ng_L)) +
+  geom_boxplot()
+
+
+fish_box <- endpoint_data_fish %>% 
+  ggplot(aes(x = PREFERRED_NAME, y = conc_ng_L)) +
+  geom_boxplot()
+
+##################################
