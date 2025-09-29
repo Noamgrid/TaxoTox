@@ -344,9 +344,10 @@ write.csv(final_ecotox_data, "../Data/final_ecotox_data.csv")
 
 NUKA <- read.fst("../Data/NUKA.fst") %>% # NUKA data - 2500 relevant organic pollutants in the EU and their CASRN
   rename("CASRN" = CAS)
-
-DSSTox <- read.fst("C:/Users/owner/Desktop/DSSTox.fst") # DSSTox - database of over million pollutants, their names and IUPAC names (updating DB, needs to create a new table each time)- outside the taxotox file so full path is needed
-
+# Add If that checks if DSSTox already exists
+if (!exists("DSSTox")) {
+  DSSTox <- read.fst("C:/Users/owner/Desktop/DSSTox.fst") # DSSTox - database of over million pollutants, their names and IUPAC names (updating DB, needs to create a new table each time)- outside the taxotox file so full path is needed
+}
 
 Internal_data <- load_file_as_df() #user's data
 
@@ -459,7 +460,7 @@ all_cas <- read_csv("../Data/manual_fill.csv") %>%  ##### TEMPORARY- manually fi
   ) %>% 
   select(-CASRN)
 
-p_final <- as.vector(all_cas$CASRN) %>%  #save as vector- without "-" (as appear in ecotox)
+p_final <- as.vector(all_cas$cas_number) %>%  #save as vector- without "-" (as appear in ecotox)
   gsub("-", "", .)
 
 
