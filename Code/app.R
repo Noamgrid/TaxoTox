@@ -1,10 +1,13 @@
-# app.R
-# This is a single-file Shiny application that allows a user to upload an Excel file
-# and then displays the first row of the uploaded file.
+#
+# This is a Shiny web application. You can run the application by clicking
+# the 'Run App' button above.
+#
+# Find out more about building applications with Shiny here:
+#
+#    http://shiny.rstudio.com/
+#
 
-# Load necessary libraries
 library(shiny)
-library(readxl) # For reading Excel files (.xlsx and .xls)
 library(openxlsx)
 library(tidyr)
 library(dplyr)
@@ -24,213 +27,376 @@ library(RSQLite)
 library(data.table)
 library(stringdist)
 library(fst)
-library(tcltk)
 library(ECOTOXr)
-# Define the User Interface (UI) of the Shiny application
+library(DT)
+
+
+# Define UI for application that draws a histogram
 ui <- fluidPage(
-  
-  # Application title
-  titlePanel("Testing taxotox on R-shiny"),
-  
-  # Sidebar layout with a file input and a main panel for output
-  sidebarLayout(
-    
-    # Sidebar panel for file input
-    sidebarPanel(
-      # fileInput: Widget for users to upload a file
-      # 'file1' is the input ID, which will be used to access the uploaded file in the server
-      # 'Choose Excel File' is the label displayed to the user
-      # 'multiple = FALSE' ensures only one file can be uploaded at a time
-      # 'accept' specifies the accepted file types, making it easier for users to select correct files
-      fileInput("file1", "Choose Excel File",
-                multiple = FALSE,
-                accept = c(".xlsx", ".xls", ".csv")) # Accepts both newer (.xlsx) older (.xls) Excel formats and csv
-    ),
-    
-    # Main panel for displaying output
-    mainPanel(
-      # verbatimTextOutput: Displays preformatted text, useful for printing R objects directly
-      # 'first_row_output' is the output ID, linked to the server logic
-      h4("First Row of Uploaded Excel Data:"),
-      verbatimTextOutput("first_row_output")
+
+    # Application title
+    titlePanel("TaxoTox"),
+
+    # Sidebar with a slider input for number of bins 
+    sidebarLayout(
+        sidebarPanel(
+            fileInput("user_file", "Choose your data file",
+                      accept = c(
+                          "text/csv",
+                          "text/comma-separated-values,text/plain",
+                          ".csv",
+                          ".xlsx",
+                          ".xls",
+                          ".txt",
+                          ".tsv"
+                      )),
+            actionButton("start_processing", "1. Load Data & Find CASRN"),
+            hr(),
+            uiOutput("interactive_casrn_ui"),
+            hr(),
+            actionButton("start_toxicity_calc", "3. Calculate Toxicity"),
+            hr(),
+            downloadButton("download_results", "4. Download Results")
+        ),
+
+        # Show a plot of the generated distribution
+        mainPanel(
+           tabsetPanel(id = "main_tabs",
+               tabPanel("Instructions",
+                        h3("Workflow"),
+                        p("1. Upload your data file using the 'Choose your data file' button."),
+                        p("2. Click 'Load Data & Find CASRN' to start the process. The app will find exact matches from the Identified CASRNs database."),
+                        p("3. 'Interactive CASRN Matching' tab will enabble you to approve identification of polutant names similar to the ones in the the input resolved using fuzzy matches in the dsstox database of pollutants names and CASRNs."), 
+                        p("4. For any remaining compounds, use the 'Manual Entry' section in the sidebar to add CASRNs one by one."),
+                        p("5. Once all CASRNs are resolved, click 'Calculate Toxicity'."),
+                        p("6. View the results in the 'Toxicity Plots' and 'Toxicity Tables' tabs."),
+                        p("7. Click 'Download Results' to get the final Excel file.")
+                        ),
+               tabPanel("CASRN Search Summary", verbatimTextOutput("cas_search_summary")),
+               tabPanel("Interactive CASRN Matching", 
+                        h4("Fuzzy Matches"),
+                        p("Review the suggested matches below and confirm or reject them by selecting rows and clicking the button."),
+                        DTOutput("fuzzy_match_table"),
+                        actionButton("submit_fuzzy_matches", "Submit Fuzzy Match Selections"),
+                        hr()
+                        ),
+               tabPanel("Toxicity Plots", 
+                        plotOutput("algae_plot"),
+                        plotOutput("crustacean_plot"),
+                        plotOutput("fish_plot")
+                        ),
+               tabPanel("Toxicity Tables",
+                        h4("Algae"),
+                        DTOutput("tox_table_algae"),
+                        h4("Crustacean"),
+                        DTOutput("tox_table_crustacean"),
+                        h4("Fish"),
+                        DTOutput("tox_table_fish")
+                        )
+           )
+        )
     )
-  )
 )
 
-# Define the Server-side logic of the Shiny application
-server <- function(input, output) {
-  
-  # Reactive expression to read the uploaded file
-  # This code will only run when 'input$file1' changes (i.e., when a file is uploaded)
-  uploaded_data <- reactive({
+# Define server logic
+server <- function(input, output, session) {
     
-    # req(input$file1) ensures that this reactive expression only proceeds
-    # if a file has actually been uploaded. If no file, it stops execution gracefully.
-    req(input$file1)
-    
-    # Get the file path of the uploaded file
-    # 'datapath' is the temporary location where Shiny stores the uploaded file
-    filepath <- input$file1$datapath
-    
-    # Determine the file extension to choose the appropriate read function
-    # Although read_excel handles both, this is good practice for more complex scenarios
-    file_ext <- tools::file_ext(filepath)
-    
-    # Read the Excel file using read_excel from the readxl package
-    # read_excel can automatically detect the sheet and format
-    # For simplicity, we assume the data is in the first sheet.
-    # If your Excel files have multiple sheets, you might need to add an input for sheet selection.
-    
-    # Use a try-catch block for robust error handling in case of an invalid Excel file
-    tryCatch({
-      data <- readxl::read_excel(filepath)
-      return(data)
-    }, error = function(e) {
-      # Display an error message if reading fails
-      showNotification(
-        paste("Error reading Excel file:", e$message),
-        type = "error",
-        duration = NULL
-      )
-      return(NULL) # Return NULL to indicate failure
-    })
-  })
-  #### Section 1 from Noams code
-
-  Sys.setlocale("LC_TIME", "English")
-  getwd()
-  #load internal data first
-  # Loading data
-  # paths will have to become relative
-  NUKA <- read.fst("C:/Users/owner/Desktop/TaxoTox/Data/NUKA.fst") %>% 
-    rename("CASRN" = CAS)# CAS from NUKA
-  DSSTox <- read.fst("C:/Users/owner/Desktop/DSSTox.fst") # CAS from DSSTox - needs to figure out how to pull
-  Internal_data <- gb_p # The user's data (in this case- the GreenBasine project)
-  p_vector <- Internal_data[[1]] # Create a vector of compounds from the user's data for CAS search
-  
-  # Convert to data.table for more efficient operations
-  setDT(NUKA)
-  setDT(DSSTox)
-  setDT(Internal_data)
-  #CASRN SEARCH
-  # First search - NUKA (exact search)
-  internal_list1 <- NUKA[NUKA$PREFERRED_NAME %in% p_vector, ]
-  p_vector_found <- internal_list1$PREFERRED_NAME # Creating a vector of all p found
-  unfound <- p_vector[!p_vector %in% p_vector_found] # Saving the p that weren't found in NUKA for further search in DSSTox
-  
-  # Create a data.table for unfounded pollutants for easier manipulation
-  unfound_dt <- data.table(PREFERRED_NAME = unfound)
-  # Second search - DSSTox (fuzzy)
-  # Interactive fuzzy matching function with confirmation for uncertain matches
-  fuzzy_match_interactive <- function(source_names, target_dt, match_col, threshold = 0.05, confirm_threshold = 0.01) {
-    # Create a result data table
-    result <- data.table(
-      source_name = source_names,
-      matched_name = NA_character_,
-      distance = NA_real_,
-      confirmed = FALSE
+    v <- reactiveValues(
+        user_data = NULL,
+        p_vector = NULL,
+        summary_log = c("Welcome to TaxoTox! Please upload a file to begin."),
+        casrn_results = NULL,
+        fuzzy_to_review = NULL,
+        manual_to_fill = NULL,
+        final_search_results = data.table(),
+        tox_results = NULL,
+        plots = NULL,
+        manual_additions = data.table(PREFERRED_NAME=character(), CASRN=character())
     )
-    # Process each source name row by row
-    for (i in 1:length(source_names)) {
-      name <- source_names[i]
-      
-      # Skip NA values in source
-      if (is.na(name)) {
-        next
-      }
-      
-      # Calculate distances to all target names (excluding NA targets)
-      valid_targets <- target_dt[[match_col]][!is.na(target_dt[[match_col]])]
-      
-      # Handle case where there are no valid targets
-      if (length(valid_targets) == 0) {
-        next
-      }
-      
-      distances <- stringdist(name, valid_targets, method = "jw")
-      
-      # Find the best match if any valid distances exist
-      if (length(distances) > 0 && !all(is.na(distances))) {
-        min_dist <- min(distances, na.rm = TRUE)
-        best_idx <- which.min(distances)
-        best_match <- valid_targets[best_idx]
-        match_quality <- round((1 - min_dist) * 100, 1)
-        
-        if (!is.na(min_dist) && min_dist <= threshold) {
-          # Get CASRN number for the matched compound
-          casrn_number <- target_dt[get(match_col) == best_match, CASRN]
-          casrn_display <- if(length(casrn_number) > 0 && !is.na(casrn_number[1])) casrn_number[1] else "Not available"
-          
-          # Auto-accept 100% matches, show message box for matches >= 95%
-          if (match_quality == 100) {
-            # Auto-accept perfect matches
-            confirmed <- TRUE
-          } else if (match_quality >= threshold) {
-            # Show message box for high confidence matches (95% and above, but not 100%)
-            message_text <- paste0(
-              "Match found for compound matching:\n\n",
-              "Source compound: ", name, "\n",
-              "Matched compound: ", best_match, "\n",
-              "CASRN number: ", casrn_display, "\n",
-              "Match confidence: ", match_quality, "%\n\n",
-              "Do you want to accept this match?"
-            )
-            
-            # Display message box with consistent format
-            answer <- tcltk::tkmessageBox(
-              title = paste0("Compound Match (", match_quality, "% confidence)"),
-              message = message_text,
-              icon = "question", 
-              type = "yesno"
-            )
-            
-            confirmed <- as.character(answer) == "yes"
-          } else {
-            # For matches below 95%, don't show message box (reject automatically)
-            confirmed <- FALSE
-          }
-          
-          if (confirmed) {
-            result[i, `:=`(
-              matched_name = best_match,
-              distance = min_dist,
-              confirmed = TRUE
-            )]
-          }
+
+    # Load static data once
+    Known_CAS <- read.fst("../Data/Known_CAS.fst", as.data.table = TRUE)
+    DSSTox <- read.fst("../Data/DSSTox.fst", as.data.table = TRUE)
+    final_ecotox_data <- read.fst("../Data/final_ecotox_data.fst", as.data.table = TRUE)
+
+    # Functions adapted from original script
+    
+    load_user_file <- function(file_path) {
+        ext <- tools::file_ext(file_path)
+        df <- switch(tolower(ext),
+                     "csv" = read.csv(file_path, stringsAsFactors = FALSE),
+                     "txt" = read.delim(file_path, stringsAsFactors = FALSE),
+                     "tsv" = read.delim(file_path, sep = "\t", stringsAsFactors = FALSE),
+                     "xls" = readxl::read_excel(file_path),
+                     "xlsx" = readxl::read_excel(file_path),
+                     stop("Unsupported file type: ", ext)
+        )
+        return(as.data.table(df))
+    }
+
+    fuzzy_match_non_interactive <- function(source_names, target_dt, match_col, threshold = 0.05) {
+        results <- list()
+        for (i in 1:length(source_names)) {
+            name <- source_names[i]
+            if (is.na(name)) next
+
+            valid_targets <- target_dt[[match_col]][!is.na(target_dt[[match_col]])]
+            if (length(valid_targets) == 0) next
+
+            distances <- stringdist(name, valid_targets, method = "jw")
+            if (length(distances) > 0 && !all(is.na(distances))) {
+                min_dist <- min(distances, na.rm = TRUE)
+                if (!is.na(min_dist) && min_dist <= threshold) {
+                    best_idx <- which.min(distances)
+                    best_match <- valid_targets[best_idx]
+                    casrn_number <- target_dt[get(match_col) == best_match, CASRN][1]
+                    
+                    results[[length(results) + 1]] <- data.table(
+                        source_name = name,
+                        matched_name = best_match,
+                        distance = min_dist,
+                        CASRN = casrn_number
+                    )
+                }
+            }
         }
+        if (length(results) > 0) return(rbindlist(results))
+        return(data.table())
+    }
+
+    observeEvent(input$start_processing, {
+        req(input$user_file)
+        
+        v$summary_log <- c("Processing started...")
+        
+        tryCatch({
+            v$user_data <- load_user_file(input$user_file$datapath)
+            v$p_vector <- v$user_data[[1]]
+            
+            v$summary_log <- c(v$summary_log, paste("Loaded", length(v$p_vector), "compounds from user file."))
+            
+            # Step 2 - CASRN search
+            internal_list <- Known_CAS[Known_CAS$PREFERRED_NAME %in% v$p_vector, ]
+            p_vector_found <- internal_list$PREFERRED_NAME
+            unfound <- v$p_vector[!v$p_vector %in% p_vector_found]
+            
+            v$final_search_results <- internal_list[, .(PREFERRED_NAME, CASRN)]
+            
+            v$summary_log <- c(v$summary_log, paste("Found", length(p_vector_found), "exact matches in Known_CAS database."))
+            
+            if (length(unfound) > 0) {
+                v$summary_log <- c(v$summary_log, paste("Searching for", length(unfound), "compounds in DSSTox (fuzzy match)..."))
+                fuzzy_matches <- fuzzy_match_non_interactive(
+                    unfound,
+                    DSSTox,
+                    "PREFERRED_NAME",
+                    threshold = 0.1
+                )
+                
+                if (nrow(fuzzy_matches) > 0) {
+                    v$fuzzy_to_review <- fuzzy_matches
+                    v$summary_log <- c(v$summary_log, paste("Found", nrow(v$fuzzy_to_review), "potential fuzzy matches for review."))
+                } else {
+                    v$summary_log <- c(v$summary_log, "No fuzzy matches found.")
+                    v$fuzzy_to_review <- NULL
+                }
+                
+                names_in_fuzzy_review <- v$fuzzy_to_review$source_name
+                v$manual_to_fill <- data.table(PREFERRED_NAME = unfound[!unfound %in% names_in_fuzzy_review])
+                
+            } else {
+                v$summary_log <- c(v$summary_log, "All compounds found in Known_CAS database.", no fuzzy search needed.")
+                v$fuzzy_to_review <- NULL
+                v$manual_to_fill <- data.table(PREFERRED_NAME=character())
+            }
+
+            updateTabsetPanel(session, "main_tabs", selected = "Interactive CASRN Matching")
+            
+        }, error = function(e) {
+            v$summary_log <- c(v$summary_log, "An error occurred:", e$message)
+        })
+    })
+
+    output$cas_search_summary <- renderPrint({
+        cat(v$summary_log, sep = "\n")
+    })
+
+    output$fuzzy_match_table <- renderDT({
+        req(v$fuzzy_to_review)
+        v$fuzzy_to_review
+    }, selection = 'multiple', options = list(pageLength = 10))
+
+    observeEvent(input$submit_fuzzy_matches, {
+        req(v$fuzzy_to_review)
+        
+        # Assume if no rows are selected, none are confirmed.
+        if (!is.null(input$fuzzy_match_table_rows_selected) && length(input$fuzzy_match_table_rows_selected) > 0) {
+            confirmed_matches <- v$fuzzy_to_review[input$fuzzy_match_table_rows_selected, ]
+            newly_confirmed <- confirmed_matches[, .(PREFERRED_NAME = source_name, CASRN)]
+            v$final_search_results <- rbindlist(list(v$final_search_results, newly_confirmed), use.names = TRUE, fill = TRUE)
+            v$summary_log <- c(v$summary_log, paste("User confirmed", nrow(newly_confirmed), "fuzzy matches."))
+            
+            # Update the list of compounds needing manual entry with the rejected ones
+            rejected_names <- v$fuzzy_to_review[-input$fuzzy_match_table_rows_selected, .(PREFERRED_NAME = source_name)]
+            v$manual_to_fill <- rbind(v$manual_to_fill, rejected_names)
+        } else {
+             v$summary_log <- c(v$summary_log, "No fuzzy matches were selected/confirmed.")
+             # All fuzzy matches are now considered rejected and need manual entry
+             v$manual_to_fill <- rbind(v$manual_to_fill, v$fuzzy_to_review[, .(PREFERRED_NAME = source_name)])
+        }
+        
+        v$fuzzy_to_review <- NULL # Clear the review table
+    })
+
+    observeEvent(input$add_manual_casrn, {
+        req(input$manual_name, input$manual_casrn)
+        name <- trimws(input$manual_name)
+        casrn <- trimws(input$manual_casrn)
+        
+        if (name != "" && casrn != "") {
+            # Add directly to the final results
+            v$final_search_results <- rbind(v$final_search_results, data.table(PREFERRED_NAME = name, CASRN = casrn))
+            # Track for display
+            v$manual_additions <- rbind(v$manual_additions, data.table(PREFERRED_NAME = name, CASRN = casrn))
+            
+            # Remove from the list of those to fill
+            v$manual_to_fill <- v$manual_to_fill[PREFERRED_NAME != name]
+            
+            v$summary_log <- c(v$summary_log, paste("Manually added CASRN for", name))
+
+            # Clear input fields for next entry
+            updateTextInput(session, "manual_casrn", value = "")
+        }
+    })
+
+    output$manual_added_list <- renderDT({
+        v$manual_additions
+    })
+    
+    observeEvent(input$start_toxicity_calc, {
+        req(nrow(v$final_search_results) > 0)
+        
+        v$summary_log <- c(v$summary_log, "Starting toxicity calculations...")
+
+        tryCatch({
+            
+            p_final <- as.data.table(v$final_search_results) %>%
+              na.omit() %>%
+              distinct(PREFERRED_NAME, .keep_all = TRUE) %>% # Ensure unique compounds
+              mutate(cas_number = gsub("-", "", CASRN)) %>%
+              select(PREFERRED_NAME, cas_number)
+            
+            cas_search_list <- as.vector(p_final$cas_number)
+
+            endpoint_data <- final_ecotox_data %>%
+              mutate(cas_number = as.character(cas_number)) %>%
+              filter(cas_number %in% cas_search_list)
+            
+            # Algae
+            endpoint_data_algae <- endpoint_data %>% 
+              filter(ecotox_group == "algae") %>% 
+              left_join(p_final, by = "cas_number", relationship = "many-to-many") %>% 
+              group_by(PREFERRED_NAME, cas_number) %>%
+              summarise(median_conc = median(conc_ng_L, na.rm = TRUE), .groups = "drop")
+            
+            tox_cal_algae <- endpoint_data_algae %>% 
+              left_join(v$user_data, by = "PREFERRED_NAME") %>% 
+              mutate(across(where(is.numeric) & !c(cas_number, median_conc), ~ .x / median_conc)) %>%
+              select(-c(cas_number, median_conc)) %>% 
+              pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>% 
+              pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>% 
+              rowwise() %>%
+              mutate(RQtg = sum(c_across(where(is.numeric)), na.rm = TRUE)) %>%
+              ungroup()
+            
+            # Crustacean
+            endpoint_data_crustacean <- endpoint_data %>% 
+              filter(ecotox_group == "crustacean") %>% 
+              left_join(p_final, by = "cas_number", relationship = "many-to-many") %>% 
+              group_by(PREFERRED_NAME, cas_number) %>%
+              summarise(median_conc = median(conc_ng_L, na.rm = TRUE), .groups = "drop")
+              
+            tox_cal_crustacean <- endpoint_data_crustacean %>% 
+              left_join(v$user_data, by = "PREFERRED_NAME") %>% 
+              mutate(across(where(is.numeric) & !c(cas_number, median_conc), ~ .x / median_conc)) %>%
+              select(-c(cas_number, median_conc)) %>% 
+              pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>% 
+              pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>% 
+              rowwise() %>%
+              mutate(RQtg = sum(c_across(where(is.numeric)), na.rm = TRUE)) %>%
+              ungroup()
+
+            # Fish
+            endpoint_data_fish <- endpoint_data %>% 
+              filter(ecotox_group == "fish") %>% 
+              left_join(p_final, by = "cas_number", relationship = "many-to-many") %>% 
+              group_by(PREFERRED_NAME, cas_number) %>%
+              summarise(median_conc = median(conc_ng_L, na.rm = TRUE), .groups = "drop")
+
+            tox_cal_fish <- endpoint_data_fish %>% 
+              left_join(v$user_data, by = "PREFERRED_NAME") %>% 
+              mutate(across(where(is.numeric) & !c(cas_number, median_conc), ~ .x / median_conc)) %>%
+              select(-c(cas_number, median_conc)) %>% 
+              pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>% 
+              pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>% 
+              rowwise() %>%
+              mutate(RQtg = sum(c_across(where(is.numeric)), na.rm = TRUE)) %>%
+              ungroup()
+            
+            v$tox_results <- list(
+                "Original data" = v$user_data,
+                "Algae toxicity" = tox_cal_algae,
+                "Crustacean toxicity" = tox_cal_crustacean,
+                "Fish toxicity" = tox_cal_fish
+            )
+
+            v$plots <- list(
+                algae = ggplot(endpoint_data_algae, aes(x = reorder(PREFERRED_NAME, median_conc, FUN=median), y = median_conc)) + geom_boxplot() + theme_minimal() + labs(title="Algae Endpoint Concentrations (EC50, ng/L)", x="Compound", y="Median EC50") + coord_flip(),
+                crustacean = ggplot(endpoint_data_crustacean, aes(x = reorder(PREFERRED_NAME, median_conc, FUN=median), y = median_conc)) + geom_boxplot() + theme_minimal() + labs(title="Crustacean Endpoint Concentrations (EC50, ng/L)", x="Compound", y="Median EC50") + coord_flip(),
+                fish = ggplot(endpoint_data_fish, aes(x = reorder(PREFERRED_NAME, median_conc, FUN=median), y = median_conc)) + geom_boxplot() + theme_minimal() + labs(title="Fish Endpoint Concentrations (EC50, ng/L)", x="Compound", y="Median EC50") + coord_flip()
+            )
+            
+            v$summary_log <- c(v$summary_log, "Toxicity calculations complete. See tabs for results.")
+            updateTabsetPanel(session, "main_tabs", selected = "Toxicity Plots")
+
+        }, error = function(e) {
+            v$summary_log <- c(v$summary_log, "An error occurred during toxicity calculation:", e$message)
+        })
+    })
+    
+    output$tox_table_algae <- renderDT({ req(v$tox_results); v$tox_results[["Algae toxicity"]] })
+    output$tox_table_crustacean <- renderDT({ req(v$tox_results); v$tox_results[["Crustacean toxicity"]] })
+    output$tox_table_fish <- renderDT({ req(v$tox_results); v$tox_results[["Fish toxicity"]] })
+    
+    output$algae_plot <- renderPlot({ req(v$plots); v$plots$algae })
+    output$crustacean_plot <- renderPlot({ req(v$plots); v$plots$crustacean })
+    output$fish_plot <- renderPlot({ req(v$plots); v$plots$fish })
+
+    output$download_results <- downloadHandler(
+        filename = function() {
+            paste("TaxoTox_results_", Sys.Date(), ".xlsx", sep = "")
+        },
+        content = function(file) {
+            req(v$tox_results)
+            write.xlsx(v$tox_results, file)
+        }
+    )
+    
+    output$interactive_casrn_ui <- renderUI({
+      if (!is.null(v$manual_to_fill) && nrow(v$manual_to_fill) > 0) {
+        tagList(
+          hr(),
+          h4("Manual Entry"),
+          p("Add CASRNs for remaining compounds."),
+          selectInput("manual_name", "Select Compound", choices = v$manual_to_fill$PREFERRED_NAME),
+          textInput("manual_casrn", "Enter CASRN (e.g., 123-45-6)"),
+          actionButton("add_manual_casrn", "Add CASRN"),
+          h5("Manually Added:"),
+          DTOutput("manual_added_list")
+        )
       }
-    }
-    
-    return(result)
-  }
-  
-  
-  
-  #### End of Noams section 1
-  # Render the output for 'first_row_output' in the UI
-  # renderPrint is used because it formats R objects (like data frames/tibbles) nicely
-  output$first_row_output <- renderPrint({
-    
-    # Get the data from the reactive expression
-    data <- uploaded_data()
-    
-    # req(data) ensures that data is not NULL (i.e., file was successfully read)
-    req(data)
-    
-    # Check if the data has any rows before trying to access the first one
-    if (nrow(data) > 0) {
-      # Select the first row of the data frame
-      first_row <- data[1, ]
-      
-      # Print the first row. renderPrint will capture this output.
-      print(first_row)
-    } else {
-      # Message if the file is empty or has no rows
-      "The uploaded Excel file is empty or contains no rows of data."
-    }
-  })
-  
+    })
 }
 
-# Run the Shiny application
+# Run the application 
 shinyApp(ui = ui, server = server)
