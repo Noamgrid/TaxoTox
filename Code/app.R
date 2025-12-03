@@ -205,7 +205,7 @@ server <- function(input, output, session) {
                 v$manual_to_fill <- data.table(PREFERRED_NAME = unfound[!unfound %in% names_in_fuzzy_review])
                 
             } else {
-                v$summary_log <- c(v$summary_log, "All compounds found in Known_CAS database.", no fuzzy search needed.")
+                v$summary_log <- c(v$summary_log, "All compounds found in Known_CAS database. No fuzzy search needed.")
                 v$fuzzy_to_review <- NULL
                 v$manual_to_fill <- data.table(PREFERRED_NAME=character())
             }
