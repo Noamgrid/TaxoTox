@@ -65,8 +65,18 @@ ui <- fluidPage(
                tabPanel("Instructions",
                         h3("Workflow"),
                         p("1. Upload your data file using the 'Choose your data file' button."),
+                        h4("Expected File Format"),
+                        p("The input file should be a table where the first column contains the chemical compound names. Subsequent columns should contain concentration data for each sample or site."),
+                        p(strong("Example Structure:")),
+                        tags$pre(paste(
+                            "Compound    |Sample1  |Sample2  |......",
+                            "Caffeine    |10.5     |18.2     |",
+                            "Atrazine    |2.1      |0.5      |1.1",
+                            "Bisphenol A |2.1      |0.3      |0.5",
+                            sep = "\n"
+                        )),
                         p("2. Click 'Load Data & Find CASRN' to start the process. The app will find exact matches from the Identified CASRNs database."),
-                        p("3. 'Interactive CASRN Matching' tab will enabble you to approve identification of polutant names similar to the ones in the the input resolved using fuzzy matches in the dsstox database of pollutants names and CASRNs."), 
+                        p("3. 'Interactive CASRN Matching' tab will enabble you to approve identification of polutant names similar to the ones in the input file. This match is resolved using fuzzy matches to the dsstox database of pollutants names and CASRNs."), 
                         p("4. For any remaining compounds, use the 'Manual Entry' section in the sidebar to add CASRNs one by one."),
                         p("5. Once all CASRNs are resolved, click 'Calculate Toxicity'."),
                         p("6. View the results in the 'Toxicity Plots' and 'Toxicity Tables' tabs."),
@@ -132,6 +142,29 @@ server <- function(input, output, session) {
                      stop("Unsupported file type: ", ext)
         )
         return(as.data.table(df))
+    }
+
+    
+    # Helper function to append to the temporary CAS file
+    append_to_temp_cas <- function(new_data) {
+        temp_cas_path <- "../Data/Known_CAS_tmp.fst"
+        
+        # Ensure new_data has the correct columns
+        if (!all(c("PREFERRED_NAME", "CASRN") %in% names(new_data))) {
+            stop("New data must contain PREFERRED_NAME and CASRN columns.")
+        }
+        
+        temp_cas_dt <- if (file.exists(temp_cas_path)) {
+            read.fst(temp_cas_path, as.data.table = TRUE)
+        } else {
+            data.table(PREFERRED_NAME = character(), CASRN = character())
+        }
+        
+        # Combine, ensure uniqueness, and write back
+        updated_dt <- rbindlist(list(temp_cas_dt, new_data), use.names = TRUE, fill = TRUE)
+        updated_dt <- unique(updated_dt, by = c("PREFERRED_NAME", "CASRN"))
+        
+        write.fst(updated_dt, temp_cas_path)
     }
 
     fuzzy_match_non_interactive <- function(source_names, target_dt, match_col, threshold = 0.05) {
