@@ -137,7 +137,7 @@ relevent_units <- c("ng/L", "ug/L", "mg/L", "g/L")
 filterd_ecotox_data_conc_unit <- filterd_ecotox_data %>% #filtering for relevant concentration units (dissolved)
   mutate(
     conc1_unit = str_remove(conc1_unit, c("^AI\\s*")), # we assume that the lab measure for active ingredient and not product
-    conc1_unit = str_replace_all(conc1_unit, "\\bdm3\\b", "L"),
+    conc1_unit = str_replace_all(conc1_unit, "\\bdm3\\b", "L"), #decimeter^3, equivalent to L
     conc1_unit = str_replace_all(conc1_unit, "ppt", "ng/L"), 
     conc1_unit = str_replace_all(conc1_unit, "ppm", "mg/L"),
     conc1_unit = str_replace_all(conc1_unit, "ppb", "ug/L"),
@@ -150,6 +150,11 @@ conversion_df <- tibble(
   factor_to_ng_L = c(1, 1e3, 1e6, 1e9)
 )
 
+
+endpoint_count <- filterd_ecotox_data_conc_unit %>% 
+  group_by(endpoint) %>% 
+  count(endpoint)
+
 irelevant_endpoints = c("NOEC","NR","LOEC","BCF","NOEL","NR-LETH","NR-ZERO","LOEL","LT50") #filtering the relevant endpoints for toxicity assessment
 
 final_ecotox_data <- filterd_ecotox_data_conc_unit %>% 
@@ -159,6 +164,13 @@ final_ecotox_data <- filterd_ecotox_data_conc_unit %>%
   mutate(endpoint = str_replace_all(endpoint, "[*/]", "")) %>% 
   filter(!endpoint %in% irelevant_endpoints) %>% 
   mutate(effect = str_replace_all(effect, "[~/]", ""))
+
+
+taxotox_data <- final_ecotox_data %>% 
+  group_by(cas_number, ecotox_group) %>% 
+  summarize(median_min_conc = median(min_concentration, na.rm = TRUE),
+            observation_count = n()) 
+
 
 
 write_fst(final_ecotox_data, "../Data/final_ecotox_data.fst", compress = 50)
