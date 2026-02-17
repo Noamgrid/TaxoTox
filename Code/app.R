@@ -64,9 +64,9 @@ ui <- fluidPage(
            tabsetPanel(id = "main_tabs",
                tabPanel("Instructions",
                         h3("Workflow"),
-                        p("1. Upload your data file using the 'Choose your data file' button."),
+                        p("1. Upload your data file using the 'Choose your data file'."),
                         h4("Expected File Format"),
-                        p("The input file should be a table where the first column contains the chemical compound names. Subsequent columns should contain concentration data for each sample or site."),
+                        p("The input file should be a table where the first column contains the chemical compound names. Subsequent columns should contain concentration data for each sample or site (in ng/L)."),
                         p(strong("Example Structure:")),
                         tags$pre(paste(
                             "Compound    |Sample1  |Sample2  |......",
@@ -167,7 +167,7 @@ server <- function(input, output, session) {
         write.fst(updated_dt, temp_cas_path)
     }
 
-    fuzzy_match_non_interactive <- function(source_names, target_dt, match_col, threshold = 0.05) {
+    fuzzy_match_non_interactive <- function(source_names, target_dt, match_col, threshold = 0.2) {
         results <- list()
         for (i in 1:length(source_names)) {
             name <- source_names[i]
