@@ -87,17 +87,24 @@ ui <- fluidPage(
                         p("7. Click 'Download Results' to get the final Excel file.")
                         ),
                tabPanel("CASRN Search Summary", verbatimTextOutput("cas_search_summary")),
-               tabPanel("Interactive CASRN Matching", 
+               tabPanel("Interactive CASRN Matching",
                         h4("Fuzzy Matches"),
-                        p("Review the suggested matches below and confirm or reject them by selecting rows and clicking the button."),
+                        p("All matches are pre-checked (accepted). Uncheck any row you want to reject, then click the button."),
                         DTOutput("fuzzy_match_table"),
-                        actionButton("submit_fuzzy_matches", "Submit Fuzzy Match Selections"),
+                        br(),
+                        actionButton("submit_fuzzy_matches", "Submit Selected Lines", class = "btn-primary"),
                         hr()
                         ),
-               tabPanel("Toxicity Plots", 
-                        plotOutput("algae_plot"),
-                        plotOutput("crustacean_plot"),
-                        plotOutput("fish_plot")
+               tabPanel("Toxicity Plots",
+                        h4("Top 10 Riskiest Samples (by Risk Assessment score)"),
+                        plotOutput("algae_sample_plot"),
+                        plotOutput("crustacean_sample_plot"),
+                        plotOutput("fish_sample_plot"),
+                        hr(),
+                        h4("Top 10 Most Toxic Pollutants per Taxonomic Group"),
+                        plotOutput("algae_pollutant_plot"),
+                        plotOutput("crustacean_pollutant_plot"),
+                        plotOutput("fish_pollutant_plot")
                         ),
                tabPanel("Toxicity Tables",
                         h4("Algae"),
@@ -106,6 +113,11 @@ ui <- fluidPage(
                         DTOutput("tox_table_crustacean"),
                         h4("Fish"),
                         DTOutput("tox_table_fish")
+                        ),
+               tabPanel("Admin",
+                        passwordInput("admin_password", "Admin Password"),
+                        actionButton("admin_login", "Login"),
+                        uiOutput("admin_panel_ui")
                         )
            )
         )
@@ -125,13 +137,15 @@ server <- function(input, output, session) {
         final_search_results = data.table(),
         tox_results = NULL,
         plots = NULL,
-        manual_additions = data.table(PREFERRED_NAME=character(), CASRN=character())
+        manual_additions = data.table(PREFERRED_NAME=character(), CASRN=character()),
+        admin_logged_in = FALSE
     )
 
     # Load static data once
     Known_CAS <- read.fst("../Data/Known_CAS.fst", as.data.table = TRUE)
     DSSTox <- read.fst("../Data/DSSTox.fst", as.data.table = TRUE)
     final_ecotox_data <- read.fst("../Data/final_ecotox_data.fst", as.data.table = TRUE)
+
 
     # Functions adapted from original script
     
@@ -151,7 +165,7 @@ server <- function(input, output, session) {
     
     # Helper function to append to the temporary CAS file
     append_to_temp_cas <- function(new_data) {
-        temp_cas_path <- "../Data/Known_CAS_tmp.fst"
+        temp_cas_path <- "../Data/temp_CAS.fst"
         
         # Ensure new_data has the correct columns
         if (!all(c("PREFERRED_NAME", "CASRN") %in% names(new_data))) {
@@ -199,6 +213,39 @@ server <- function(input, output, session) {
         }
         if (length(results) > 0) return(rbindlist(results))
         return(data.table())
+    }
+
+    # Plot helper: bar chart of total RQtg per sample, top-10 riskiest, top-3 names as subtitle
+    make_sample_risk_plot <- function(tox_cal, group_label) {
+        if (is.null(tox_cal) || nrow(tox_cal) == 0)
+            return(ggplot() + labs(title = paste(group_label, ": No data available")))
+        n_show <- min(10, nrow(tox_cal))
+        top_samples <- tox_cal %>% arrange(desc(RQtg)) %>% slice(1:n_show)
+        top3_label  <- paste("Top 3:", paste(head(top_samples$Sample, min(3, nrow(top_samples))), collapse = ", "))
+        ggplot(top_samples, aes(x = reorder(Sample, RQtg), y = RQtg)) +
+            geom_col(fill = "steelblue") + coord_flip() + theme_minimal() +
+            labs(title    = paste(group_label, "\u2014 Top", n_show, "Riskiest Samples"),
+                 subtitle = top3_label,
+                 x = "Sample", y = "Risk Assessment (RQtg)")
+    }
+
+    # Plot helper: top-10 pollutants by median TU, boxplot across all samples
+    make_pollutant_plot <- function(tox_cal, group_label) {
+        if (is.null(tox_cal) || nrow(tox_cal) == 0)
+            return(ggplot() + labs(title = paste(group_label, ": No data available")))
+        long_data <- tox_cal %>%
+            select(-RQtg) %>%
+            pivot_longer(cols = -Sample, names_to = "Compound", values_to = "TU") %>%
+            filter(!is.na(TU), TU > 0)
+        top_compounds <- long_data %>%
+            group_by(Compound) %>%
+            summarise(med = median(TU, na.rm = TRUE), .groups = "drop") %>%
+            arrange(desc(med)) %>% slice(1:min(10, n())) %>% pull(Compound)
+        ggplot(long_data %>% filter(Compound %in% top_compounds),
+               aes(x = reorder(Compound, TU, FUN = median), y = TU)) +
+            geom_boxplot() + coord_flip() + theme_minimal() +
+            labs(title = paste(group_label, "\u2014 Top", length(top_compounds), "Pollutants by TU"),
+                 x = "Compound", y = "Toxic Unit (TU)")
     }
 
     observeEvent(input$start_processing, {
@@ -261,28 +308,41 @@ server <- function(input, output, session) {
 
     output$fuzzy_match_table <- renderDT({
         req(v$fuzzy_to_review)
-        v$fuzzy_to_review
-    }, selection = 'multiple', options = list(pageLength = 10))
+        df <- as.data.frame(v$fuzzy_to_review)
+        df <- cbind(
+            Accept = sapply(seq_len(nrow(df)), function(i) {
+                as.character(checkboxInput(paste0("fuzzy_cb_", i), label = NULL, value = TRUE))
+            }),
+            df
+        )
+        datatable(df, escape = FALSE, selection = 'none',
+                  options = list(
+                      pageLength = 10,
+                      preDrawCallback = JS('function() { Shiny.unbindAll(this.api().table().node()); }'),
+                      drawCallback   = JS('function() { Shiny.bindAll(this.api().table().node()); }')
+                  ))
+    }, server = FALSE)
 
     observeEvent(input$submit_fuzzy_matches, {
         req(v$fuzzy_to_review)
-        
-        # Assume if no rows are selected, none are confirmed.
-        if (!is.null(input$fuzzy_match_table_rows_selected) && length(input$fuzzy_match_table_rows_selected) > 0) {
-            confirmed_matches <- v$fuzzy_to_review[input$fuzzy_match_table_rows_selected, ]
+
+        n <- nrow(v$fuzzy_to_review)
+        accepted_idx <- which(sapply(seq_len(n), function(i) isTRUE(input[[paste0("fuzzy_cb_", i)]])))
+
+        if (length(accepted_idx) > 0) {
+            confirmed_matches <- v$fuzzy_to_review[accepted_idx, ]
             newly_confirmed <- confirmed_matches[, .(PREFERRED_NAME = source_name, CASRN)]
             v$final_search_results <- rbindlist(list(v$final_search_results, newly_confirmed), use.names = TRUE, fill = TRUE)
+            append_to_temp_cas(newly_confirmed)
             v$summary_log <- c(v$summary_log, paste("User confirmed", nrow(newly_confirmed), "fuzzy matches."))
-            
-            # Update the list of compounds needing manual entry with the rejected ones
-            rejected_names <- v$fuzzy_to_review[-input$fuzzy_match_table_rows_selected, .(PREFERRED_NAME = source_name)]
+
+            rejected_names <- v$fuzzy_to_review[-accepted_idx, .(PREFERRED_NAME = source_name)]
             v$manual_to_fill <- rbind(v$manual_to_fill, rejected_names)
         } else {
-             v$summary_log <- c(v$summary_log, "No fuzzy matches were selected/confirmed.")
-             # All fuzzy matches are now considered rejected and need manual entry
-             v$manual_to_fill <- rbind(v$manual_to_fill, v$fuzzy_to_review[, .(PREFERRED_NAME = source_name)])
+            v$summary_log <- c(v$summary_log, "No fuzzy matches were confirmed.")
+            v$manual_to_fill <- rbind(v$manual_to_fill, v$fuzzy_to_review[, .(PREFERRED_NAME = source_name)])
         }
-        
+
         v$fuzzy_to_review <- NULL # Clear the review table
     })
 
@@ -292,14 +352,16 @@ server <- function(input, output, session) {
         casrn <- trimws(input$manual_casrn)
         
         if (name != "" && casrn != "") {
+            new_entry <- data.table(PREFERRED_NAME = name, CASRN = casrn)
             # Add directly to the final results
-            v$final_search_results <- rbind(v$final_search_results, data.table(PREFERRED_NAME = name, CASRN = casrn))
+            v$final_search_results <- rbind(v$final_search_results, new_entry)
             # Track for display
-            v$manual_additions <- rbind(v$manual_additions, data.table(PREFERRED_NAME = name, CASRN = casrn))
-            
+            v$manual_additions <- rbind(v$manual_additions, new_entry)
+            # Store in temp_CAS for admin review
+            append_to_temp_cas(new_entry)
             # Remove from the list of those to fill
             v$manual_to_fill <- v$manual_to_fill[PREFERRED_NAME != name]
-            
+
             v$summary_log <- c(v$summary_log, paste("Manually added CASRN for", name))
 
             # Clear input fields for next entry
@@ -381,17 +443,25 @@ server <- function(input, output, session) {
               mutate(RQtg = sum(c_across(where(is.numeric)), na.rm = TRUE)) %>%
               ungroup()
             
+            # Rename RQtg -> "Risk assessment" and move to second column for output
+            format_tox_output <- function(df) {
+                df %>% rename("Risk assessment" = RQtg) %>%
+                    select(Sample, `Risk assessment`, everything())
+            }
             v$tox_results <- list(
-                "Original data" = v$user_data,
-                "Algae toxicity" = tox_cal_algae,
-                "Crustacean toxicity" = tox_cal_crustacean,
-                "Fish toxicity" = tox_cal_fish
+                "Original data"       = v$user_data,
+                "Algae toxicity"      = format_tox_output(tox_cal_algae),
+                "Crustacean toxicity" = format_tox_output(tox_cal_crustacean),
+                "Fish toxicity"       = format_tox_output(tox_cal_fish)
             )
 
             v$plots <- list(
-                algae = ggplot(endpoint_data_algae, aes(x = reorder(PREFERRED_NAME, median_conc, FUN=median), y = median_conc)) + geom_boxplot() + theme_minimal() + labs(title="Algae Endpoint Concentrations (EC50, ng/L)", x="Compound", y="Median EC50") + coord_flip(),
-                crustacean = ggplot(endpoint_data_crustacean, aes(x = reorder(PREFERRED_NAME, median_conc, FUN=median), y = median_conc)) + geom_boxplot() + theme_minimal() + labs(title="Crustacean Endpoint Concentrations (EC50, ng/L)", x="Compound", y="Median EC50") + coord_flip(),
-                fish = ggplot(endpoint_data_fish, aes(x = reorder(PREFERRED_NAME, median_conc, FUN=median), y = median_conc)) + geom_boxplot() + theme_minimal() + labs(title="Fish Endpoint Concentrations (EC50, ng/L)", x="Compound", y="Median EC50") + coord_flip()
+                algae_samples       = make_sample_risk_plot(tox_cal_algae,       "Algae"),
+                crustacean_samples  = make_sample_risk_plot(tox_cal_crustacean,  "Crustacean"),
+                fish_samples        = make_sample_risk_plot(tox_cal_fish,        "Fish"),
+                algae_pollutants    = make_pollutant_plot(tox_cal_algae,         "Algae"),
+                crustacean_pollutants = make_pollutant_plot(tox_cal_crustacean,  "Crustacean"),
+                fish_pollutants     = make_pollutant_plot(tox_cal_fish,          "Fish")
             )
             
             v$summary_log <- c(v$summary_log, "Toxicity calculations complete. See tabs for results.")
@@ -406,13 +476,16 @@ server <- function(input, output, session) {
     output$tox_table_crustacean <- renderDT({ req(v$tox_results); v$tox_results[["Crustacean toxicity"]] })
     output$tox_table_fish <- renderDT({ req(v$tox_results); v$tox_results[["Fish toxicity"]] })
     
-    output$algae_plot <- renderPlot({ req(v$plots); v$plots$algae })
-    output$crustacean_plot <- renderPlot({ req(v$plots); v$plots$crustacean })
-    output$fish_plot <- renderPlot({ req(v$plots); v$plots$fish })
+    output$algae_sample_plot       <- renderPlot({ req(v$plots); v$plots$algae_samples })
+    output$crustacean_sample_plot  <- renderPlot({ req(v$plots); v$plots$crustacean_samples })
+    output$fish_sample_plot        <- renderPlot({ req(v$plots); v$plots$fish_samples })
+    output$algae_pollutant_plot    <- renderPlot({ req(v$plots); v$plots$algae_pollutants })
+    output$crustacean_pollutant_plot <- renderPlot({ req(v$plots); v$plots$crustacean_pollutants })
+    output$fish_pollutant_plot     <- renderPlot({ req(v$plots); v$plots$fish_pollutants })
 
     output$download_results <- downloadHandler(
         filename = function() {
-            paste("TaxoTox_results_", Sys.Date(), ".xlsx", sep = "")
+            paste0("taxotox_", tools::file_path_sans_ext(input$user_file$name), ".xlsx")
         },
         content = function(file) {
             req(v$tox_results)
@@ -420,6 +493,59 @@ server <- function(input, output, session) {
         }
     )
     
+    # ── Admin panel ───────────────────────────────────────────────────────────
+    # Change ADMIN_PASSWORD before deployment!
+    ADMIN_PASSWORD <- "TaxoTox2025!"
+
+    observeEvent(input$admin_login, {
+        if (isTRUE(input$admin_password == ADMIN_PASSWORD)) {
+            v$admin_logged_in <- TRUE
+        } else {
+            v$admin_logged_in <- FALSE
+            showNotification("Incorrect password.", type = "error")
+        }
+    })
+
+    output$admin_panel_ui <- renderUI({
+        if (!isTRUE(v$admin_logged_in)) return(NULL)
+        temp_path <- "../Data/temp_CAS.fst"
+        if (!file.exists(temp_path))
+            return(tagList(br(), p("No pending entries in temp_CAS — nothing to promote.")))
+        tagList(
+            h4("Pending entries in temp_CAS (awaiting promotion to Known_CAS)"),
+            p("Select rows to approve, then click the button. Unselected rows stay in temp_CAS."),
+            DTOutput("admin_temp_table"),
+            br(),
+            actionButton("admin_approve", "Promote selected to Known_CAS", class = "btn-success")
+        )
+    })
+
+    output$admin_temp_table <- renderDT({
+        req(v$admin_logged_in)
+        temp_path <- "../Data/temp_CAS.fst"
+        if (!file.exists(temp_path)) return(data.table())
+        datatable(read.fst(temp_path, as.data.table = TRUE),
+                  selection = "multiple", options = list(pageLength = 20))
+    })
+
+    observeEvent(input$admin_approve, {
+        req(v$admin_logged_in)
+        temp_path <- "../Data/temp_CAS.fst"
+        if (!file.exists(temp_path)) { showNotification("temp_CAS.fst not found.", type = "warning"); return() }
+        temp_dt <- read.fst(temp_path, as.data.table = TRUE)
+        sel     <- input$admin_temp_table_rows_selected
+        if (is.null(sel) || length(sel) == 0) { showNotification("No rows selected.", type = "warning"); return() }
+        to_promote  <- temp_dt[sel, ]
+        known_dt    <- read.fst("../Data/Known_CAS.fst", as.data.table = TRUE)
+        updated_known <- unique(rbindlist(list(known_dt, to_promote[, .(PREFERRED_NAME, CASRN)]),
+                                          use.names = TRUE, fill = TRUE),
+                                by = c("PREFERRED_NAME", "CASRN"))
+        write.fst(updated_known, "../Data/Known_CAS.fst")
+        remaining <- temp_dt[-sel, ]
+        if (nrow(remaining) > 0) write.fst(remaining, temp_path) else file.remove(temp_path)
+        showNotification(paste(nrow(to_promote), "entries promoted to Known_CAS.fst."), type = "message")
+    })
+
     output$interactive_casrn_ui <- renderUI({
       if (is.null(v$fuzzy_to_review) && !is.null(v$manual_to_fill) && nrow(v$manual_to_fill) > 0) {
         tagList(
