@@ -42,8 +42,27 @@ conn <- dbConnect(RSQLite::SQLite(), "C:/Users/owner/AppData/Local/ECOTOXr/ECOTO
 
 #combining all relevant columns from result, test and chemical df
 
-mysearch <- paste0("WITH enriched_results AS (
-    SELECT 
+mysearch <- paste0("
+-- ============================================================
+-- TaxoTox ECOTOX extraction query
+-- Purpose: pull all aquatic toxicity results (fish, algae,
+--   crustacean) with concentration values converted to a
+--   single numeric field (min_concentration) ready for unit
+--   conversion in R.
+-- Source tables (ECOTOXr SQLite cache):
+--   results   - one row per measured endpoint result
+--   tests     - experimental conditions, links to species/chemical
+--   species   - taxonomic group (ecotox_group)
+--   chemicals - chemical name and CAS number
+-- ============================================================
+
+-- CTE: enrich each result row with species, chemical, and
+-- test metadata, and compute calc_conc1_mean.
+-- calc_conc1_mean: use conc1_mean when valid (>0);
+--   fall back to (conc1_min + conc1_max)/2 when mean is
+--   missing or zero but range bounds are available.
+WITH enriched_results AS (
+    SELECT
         r.result_id,
         t.test_id,
         t.reference_number,
@@ -64,9 +83,9 @@ mysearch <- paste0("WITH enriched_results AS (
         c.chemical_name,
         c.cas_number,
         -- Step 1: compute adjusted conc1_mean
-        CASE 
-            WHEN (r.conc1_mean IS NULL OR r.conc1_mean <= 0) 
-                 AND r.conc1_min > 0 AND r.conc1_max > 0 
+        CASE
+            WHEN (r.conc1_mean IS NULL OR r.conc1_mean <= 0)
+                 AND r.conc1_min > 0 AND r.conc1_max > 0
             THEN (r.conc1_min + r.conc1_max) / 2.0
             ELSE r.conc1_mean
         END AS calc_conc1_mean
@@ -76,13 +95,18 @@ mysearch <- paste0("WITH enriched_results AS (
     JOIN chemicals c ON t.test_cas = c.cas_number
 )
 
-SELECT 
+SELECT
     er.result_id,
 
-    -- Step 2: calculate min_concentration using calc_conc1_mean
-    CASE 
+    -- Step 2: min_concentration = lowest available concentration
+    -- across the up to three concentration columns (conc1/2/3).
+    -- Using the minimum follows the conservative approach for
+    -- mixture toxicity: we prefer the most sensitive value when
+    -- multiple concentrations are reported for a single result.
+    -- Only positive (non-zero) values are considered.
+    CASE
         WHEN er.calc_conc1_mean > 0 AND er.conc2_mean > 0 AND er.conc3_mean > 0 THEN
-            CASE 
+            CASE
                 WHEN er.calc_conc1_mean <= er.conc2_mean AND er.calc_conc1_mean <= er.conc3_mean THEN er.calc_conc1_mean
                 WHEN er.conc2_mean <= er.conc3_mean THEN er.conc2_mean
                 ELSE er.conc3_mean
@@ -98,7 +122,7 @@ SELECT
         WHEN er.conc3_mean > 0 THEN er.conc3_mean
         ELSE NULL
     END AS min_concentration,
-    
+
     er.endpoint,
     er.cas_number,
     er.trend,
@@ -111,21 +135,26 @@ SELECT
     er.conc1_unit,
     t.test_cas,
     er.species,
-    
-    CASE 
+
+    -- Normalise ecotox_group labels: ECOTOX uses varied strings
+    -- (e.g. 'Fish', 'Saltwater Fish'); map all to lowercase tokens
+    -- so downstream R code can filter with simple equality checks.
+    CASE
         WHEN LOWER(er.ecotox_group) LIKE '%fish%' THEN 'fish'
         WHEN LOWER(er.ecotox_group) LIKE '%algae%' THEN 'algae'
         WHEN LOWER(er.ecotox_group) LIKE '%crustacean%' THEN 'crustacean'
         ELSE er.ecotox_group
     END AS ecotox_group,
-    
+
     er.chemical_name
 
 FROM enriched_results er
 JOIN tests t ON er.test_id = t.test_id
 
-WHERE LOWER(er.ecotox_group) LIKE '%fish%' 
-   OR LOWER(er.ecotox_group) LIKE '%algae%' 
+-- Keep only the three aquatic organism groups relevant to TaxoTox.
+-- All other ecotox_groups (birds, mammals, etc.) are excluded.
+WHERE LOWER(er.ecotox_group) LIKE '%fish%'
+   OR LOWER(er.ecotox_group) LIKE '%algae%'
    OR LOWER(er.ecotox_group) LIKE '%crustacean%';
 ")
 

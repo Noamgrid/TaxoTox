@@ -50,7 +50,11 @@ ui <- fluidPage(
                           ".txt",
                           ".tsv"
                       )),
-            actionButton("start_processing", "1. Load Data & Find CASRN"),
+            numericInput("fuzzy_threshold",
+                         "Fuzzy match sensitivity (0 = identical only, 0.3 = lenient)",
+                         value = 0.1, min = 0.0, max = 0.5, step = 0.05),
+            actionButton("start_processing", "2. Find CASRNs",
+                         title = "CASRN = Chemical Abstracts Service Registry Number: a unique identifier for each chemical compound"),
             hr(),
             uiOutput("interactive_casrn_ui"),
             hr(),
@@ -75,7 +79,7 @@ ui <- fluidPage(
                             "Bisphenol A |2.1      |0.3      |0.5",
                             sep = "\n"
                         )),
-                        p("2. Click 'Load Data & Find CASRN' to start the process. The app will find exact matches from the Identified CASRNs database."),
+                        p("2. Click 'Find CASRNs' to start the search. The app will find exact matches from the Known CASRNs database, then run a fuzzy search on anything unmatched."),
                         p("3. 'Interactive CASRN Matching' tab will enabble you to approve identification of polutant names similar to the ones in the input file. This match is resolved using fuzzy matches to the dsstox database of pollutants names and CASRNs."), 
                         p("4. For any remaining compounds, use the 'Manual Entry' section in the sidebar to add CASRNs one by one."),
                         p("5. Once all CASRNs are resolved, click 'Calculate Toxicity'."),
@@ -204,6 +208,7 @@ server <- function(input, output, session) {
         
         tryCatch({
             v$user_data <- load_user_file(input$user_file$datapath)
+            names(v$user_data)[1] <- "PREFERRED_NAME"  # normalise: first column is always the compound name
             v$p_vector <- v$user_data[[1]]
             
             v$summary_log <- c(v$summary_log, paste("Loaded", length(v$p_vector), "compounds from user file."))
@@ -223,7 +228,7 @@ server <- function(input, output, session) {
                     unfound,
                     DSSTox,
                     "PREFERRED_NAME",
-                    threshold = 0.1
+                    threshold = input$fuzzy_threshold
                 )
                 
                 if (nrow(fuzzy_matches) > 0) {
@@ -416,7 +421,7 @@ server <- function(input, output, session) {
     )
     
     output$interactive_casrn_ui <- renderUI({
-      if (!is.null(v$manual_to_fill) && nrow(v$manual_to_fill) > 0) {
+      if (is.null(v$fuzzy_to_review) && !is.null(v$manual_to_fill) && nrow(v$manual_to_fill) > 0) {
         tagList(
           hr(),
           h4("Manual Entry"),
