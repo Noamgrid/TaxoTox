@@ -21,9 +21,14 @@ required_packages <- c(
     "stringr", 
     "RSQLite", 
     "data.table", 
-    "stringdist", 
+    "stringdist",
     "fst",
-    "DT"
+    "DT",
+    # webchem provides access to cheminformatics web databases (PubChem, CTS,
+    # ChemSpider, etc.) from R. Used here to query the PubChem REST API for
+    # CAS Registry Numbers when a compound is not found in Known_CAS or by
+    # exact name in DSSTox. No API key is required for PubChem or CTS queries.
+    "webchem"
 )
 
 # Identify which packages are not yet installed
