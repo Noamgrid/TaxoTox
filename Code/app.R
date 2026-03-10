@@ -1049,7 +1049,7 @@ server <- function(input, output, session) {
                 select(-c(cas_number, median_conc)) %>%
                 pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
                 pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
-                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE) * 100)
+                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
 
             # Crustacean ───────────────────────────────────────────────────────
             endpoint_data_crustacean <- endpoint_data %>%
@@ -1064,7 +1064,7 @@ server <- function(input, output, session) {
                 select(-c(cas_number, median_conc)) %>%
                 pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
                 pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
-                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE) * 100)
+                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
 
             # Fish ─────────────────────────────────────────────────────────────
             endpoint_data_fish <- endpoint_data %>%
@@ -1079,7 +1079,7 @@ server <- function(input, output, session) {
                 select(-c(cas_number, median_conc)) %>%
                 pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
                 pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
-                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE) * 100)
+                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
 
             # ── Rename RQtg for display and reorder columns ──────────────────
             # "Risk assessment" is used as the column header in tables and the
