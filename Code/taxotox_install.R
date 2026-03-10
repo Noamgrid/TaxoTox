@@ -184,14 +184,23 @@ endpoint_count <- filterd_ecotox_data_conc_unit %>%
   group_by(endpoint) %>% 
   count(endpoint)
 
-irelevant_endpoints = c("NOEC","NR","LOEC","BCF","NOEL","NR-LETH","NR-ZERO","LOEL","LT50") #filtering the relevant endpoints for toxicity assessment
-
-final_ecotox_data <- filterd_ecotox_data_conc_unit %>% 
+final_ecotox_data <- filterd_ecotox_data_conc_unit %>%
   left_join(conversion_df, by = "conc1_unit") %>%
-  mutate(min_concentration = as.numeric(min_concentration)) %>% 
-  mutate(conc_ng_L = min_concentration * factor_to_ng_L) %>% 
-  mutate(endpoint = str_replace_all(endpoint, "[*/]", "")) %>% 
-  filter(!endpoint %in% irelevant_endpoints) %>% 
+  mutate(min_concentration = as.numeric(min_concentration)) %>%
+  # Back-transform (log)-reported values BEFORE unit conversion.
+  # "(log)EC50" / "(log)LC50" mean the concentration is stored as log10(conc).
+  mutate(min_concentration = if_else(
+    str_detect(endpoint, "^\\(log\\)"),
+    10 ^ min_concentration,
+    min_concentration
+  )) %>%
+  mutate(conc_ng_L = min_concentration * factor_to_ng_L) %>%
+  # Normalise endpoint labels:
+  #   (log)EC50 -> EC50,  (log)LC50 -> LC50,  LC50* -> LC50
+  mutate(endpoint = str_remove(endpoint, "^\\(log\\)"),
+         endpoint = str_replace_all(endpoint, "[*/]", "")) %>%
+  # Fix C: keep only true acute benchmarks
+  filter(endpoint %in% c("LC50", "EC50")) %>%
   mutate(effect = str_replace_all(effect, "[~/]", ""))
 
 
