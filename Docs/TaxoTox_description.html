@@ -1,0 +1,864 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TaxoTox — Software Description</title>
+  <style>
+    /* ── Typography & layout ────────────────────────────────────────────── */
+    *, *::before, *::after { box-sizing: border-box; }
+    body {
+      font-family: "Georgia", "Times New Roman", serif;
+      font-size: 16px;
+      line-height: 1.75;
+      color: #222;
+      background: #fff;
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 48px 32px 80px;
+    }
+    h1, h2, h3, h4 {
+      font-family: "Helvetica Neue", Arial, sans-serif;
+      font-weight: 700;
+      color: #1a3a5c;
+      margin-top: 2em;
+      margin-bottom: 0.4em;
+    }
+    h1 { font-size: 2em;   border-bottom: 3px solid #1a3a5c; padding-bottom: 0.25em; }
+    h2 { font-size: 1.5em; border-bottom: 1px solid #aac; padding-bottom: 0.15em; }
+    h3 { font-size: 1.2em; }
+    h4 { font-size: 1.05em; color: #2c5580; }
+    p  { margin: 0.6em 0 0.9em; }
+    a  { color: #1a5fa8; }
+
+    /* ── Title block ────────────────────────────────────────────────────── */
+    .title-block {
+      border-left: 5px solid #1a3a5c;
+      padding: 18px 24px;
+      background: #f4f7fb;
+      margin-bottom: 2em;
+    }
+    .title-block h1 { border: none; margin-top: 0; }
+    .title-block .subtitle {
+      font-size: 1.05em;
+      color: #444;
+      font-style: italic;
+      margin: 4px 0 12px;
+    }
+    .authors { font-size: 0.95em; color: #333; margin: 0; }
+    .affil   { font-size: 0.88em; color: #666; margin: 2px 0 0; }
+
+    /* ── Abstract ───────────────────────────────────────────────────────── */
+    .abstract {
+      background: #f9f9f9;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 16px 22px;
+      margin-bottom: 2em;
+    }
+    .abstract h3 { margin-top: 0; color: #333; font-size: 1em; }
+
+    /* ── Equations ──────────────────────────────────────────────────────── */
+    .eq-block {
+      background: #f5f5f5;
+      border-left: 4px solid #1a3a5c;
+      font-family: "Courier New", monospace;
+      font-size: 1em;
+      padding: 10px 18px;
+      margin: 1em 0 1em 1.5em;
+      white-space: pre;
+      overflow-x: auto;
+    }
+
+    /* ── Code / file names ──────────────────────────────────────────────── */
+    code {
+      font-family: "Courier New", Consolas, monospace;
+      font-size: 0.9em;
+      background: #f0f0f0;
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    pre {
+      background: #f0f0f0;
+      border: 1px solid #ddd;
+      border-radius: 4px;
+      padding: 12px 16px;
+      overflow-x: auto;
+      font-size: 0.88em;
+      line-height: 1.55;
+    }
+
+    /* ── Tables ─────────────────────────────────────────────────────────── */
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1em 0;
+      font-size: 0.93em;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 7px 12px;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #e8eef5; font-weight: 700; }
+    tr:nth-child(even) td { background: #fafafa; }
+
+    /* ── Risk colour table ──────────────────────────────────────────────── */
+    .risk-high   { color: #B71C1C; font-weight: bold; }
+    .risk-medium { color: #E65100; font-weight: bold; }
+
+    /* ── Figure captions ────────────────────────────────────────────────── */
+    .fig-caption {
+      font-size: 0.88em;
+      color: #555;
+      font-style: italic;
+      margin-top: 4px;
+    }
+
+    /* ── Callout boxes ──────────────────────────────────────────────────── */
+    .callout {
+      border: 1px solid #b0c4de;
+      border-radius: 4px;
+      background: #eef3fa;
+      padding: 12px 18px;
+      margin: 1.2em 0;
+    }
+    .callout strong { color: #1a3a5c; }
+
+    /* ── Numbered lists with hanging indent ─────────────────────────────── */
+    ol li, ul li { margin-bottom: 0.35em; }
+
+    /* ── Footer ─────────────────────────────────────────────────────────── */
+    footer {
+      margin-top: 4em;
+      padding-top: 1em;
+      border-top: 1px solid #ccc;
+      font-size: 0.85em;
+      color: #666;
+    }
+  </style>
+</head>
+<body>
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     TITLE BLOCK
+════════════════════════════════════════════════════════════════════════ -->
+<div class="title-block">
+  <h1>TaxoTox</h1>
+  <p class="subtitle">
+    A Shiny Application for Taxonomic Mixture-Toxicity Assessment of
+    Aquatic Pollutant Assemblages
+  </p>
+  <p class="authors">
+    Noam Greenwald, Yair Suari
+  </p>
+  <p class="affil">
+    School of Marine Sciences, Ruppin Academic Center, Mikhmoret, Israel
+  </p>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     ABSTRACT
+════════════════════════════════════════════════════════════════════════ -->
+<div class="abstract">
+  <h3>Abstract</h3>
+  <p>
+    TaxoTox is an open-source R/Shiny application for rapid assessment of
+    the mixture toxicity of environmental pollutant assemblages. Given a table
+    of measured compound concentrations (in ng/L) at one or more monitoring
+    stations, TaxoTox (i) automatically resolves compound names to CAS Registry
+    Numbers (CASRNs) using a curated internal lookup table augmented by optional
+    PubChem REST API queries, (ii) retrieves taxon-specific median acute
+    LC50/EC50 values from the US EPA ECOTOX Knowledgebase, (iii) computes
+    per-compound Toxic Units (TUs) and summed Pollution Toxicity Indices (PTIs)
+    separately for three functional taxonomic groups — algae, crustaceans, and
+    fish — and (iv) presents results as interactive plots, searchable tables,
+    and a downloadable multi-sheet Excel workbook. TaxoTox makes the TU
+    framework accessible to environmental managers and researchers without
+    requiring programming knowledge, and is designed for routine screening of
+    monitoring data at the regional or national scale.
+  </p>
+</div>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     1. INTRODUCTION
+════════════════════════════════════════════════════════════════════════ -->
+<h2>1. Introduction</h2>
+
+<p>
+  Environmental monitoring programmes increasingly generate large matrices of
+  compound-concentration data spanning tens to hundreds of organic
+  micropollutants measured across many sampling sites and dates. Individually,
+  most detected concentrations fall well below acute effect thresholds;
+  however, the ecological risk of a complex mixture is not adequately captured
+  by single-compound exceedance calculations. The Toxic Unit (TU) framework
+  (Sprague &amp; Ramsay, 1965; Könemann, 1981) addresses this by expressing
+  each concentration as a fraction of its effect concentration and summing over
+  all detected compounds to yield a single dimensionless mixture-toxicity index.
+  When the sum of TUs — here termed the Pollution Toxicity Index (PTI) — equals
+  or exceeds unity, the mixture may cause acute effects on the receptor
+  taxonomic group; values between 0.1 and 1 are associated with potential
+  chronic or sub-lethal effects on sensitive species.
+</p>
+<p>
+  Despite its conceptual simplicity, routine application of the TU framework is
+  operationally demanding: compound CAS Registry Numbers must be resolved,
+  toxicity benchmarks must be retrieved and harmonised across units, and results
+  must be computed, visualised, and exported — repeatedly, for dozens of sites
+  and sampling dates. TaxoTox automates this workflow within a graphical
+  interface that requires no R programming knowledge, enabling its use by
+  environmental managers and practitioners.
+</p>
+<p>
+  The application uses the US EPA ECOTOX Knowledgebase (US EPA, 2024) as its
+  primary source of toxicity data — the most comprehensive freely available
+  repository of aquatic ecotoxicology literature values — and is validated
+  against independently computed PTI values from the US National Water Quality
+  Network (Covert et al., 2020).
+</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     2. SCIENTIFIC BACKGROUND
+════════════════════════════════════════════════════════════════════════ -->
+<h2>2. Scientific Background</h2>
+
+<h3>2.1 Toxic Unit Framework</h3>
+<p>
+  The Toxic Unit for compound <em>i</em> in sample <em>j</em> with respect to
+  taxonomic group <em>g</em> is defined as:
+</p>
+<div class="eq-block">TU<sub>ijg</sub> = C<sub>ij</sub> / LC50<sub>ig</sub></div>
+<p>
+  where C<sub>ij</sub> is the measured concentration of compound <em>i</em> in
+  sample <em>j</em> (ng/L) and LC50<sub>ig</sub> is a reference effect
+  concentration — the median lethal or effective concentration — for compound
+  <em>i</em> and taxonomic group <em>g</em> (ng/L). TaxoTox uses the median
+  of all LC50 and EC50 values available in ECOTOX for the given compound and
+  group as the denominator. The median is preferred over the geometric mean
+  because it is more robust to the long upper tail characteristic of ECOTOX
+  distributions and because it does not require assumptions about the
+  distribution of values.
+</p>
+<p>
+  Under the Concentration Addition (CA) model, which assumes that mixture
+  components share a common mode of action or act independently on the same
+  target, the mixture PTI for sample <em>j</em> and group <em>g</em> is:
+</p>
+<div class="eq-block">PTI<sub>jg</sub> = &sum;<sub>i</sub> TU<sub>ijg</sub></div>
+<p>
+  A PTI of 1 means that the mixture, collectively, is expected to be at the
+  LC50 level for the group. The CA model is known to be a conservative
+  (i.e. protective) predictor of mixture toxicity when components act via
+  different mechanisms, and is recommended as a screening-level tool by US EPA
+  and European regulatory guidance (SCHER et al., 2012; US EPA, 2000).
+</p>
+
+<h3>2.2 Risk Thresholds</h3>
+<table>
+  <thead>
+    <tr>
+      <th>PTI range</th>
+      <th>Interpretation</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td class="risk-high">&ge; 1.0</td>
+      <td>Acute risk — the mixture may cause lethal or immobilisation effects
+          on the receptor taxonomic group.</td>
+    </tr>
+    <tr>
+      <td class="risk-medium">0.1 – 1.0</td>
+      <td>Chronic risk — sub-lethal or chronic effects on sensitive species
+          are possible.</td>
+    </tr>
+    <tr>
+      <td>&lt; 0.1</td>
+      <td>Low risk — the mixture is unlikely to cause measurable toxicity at
+          the population level under the CA assumption.</td>
+    </tr>
+  </tbody>
+</table>
+<p>
+  These thresholds follow Sprague (1970) and are widely used in European water
+  quality assessments (e.g. Stehle &amp; Schulz, 2015; Moschet et al., 2014).
+</p>
+
+<h3>2.3 Taxonomic Groups</h3>
+<p>
+  TaxoTox computes PTI separately for three functional groups that are standard
+  ecological risk assessment endpoints:
+</p>
+<ul>
+  <li><strong>Algae</strong> — primary producers; sensitive to herbicides.</li>
+  <li><strong>Crustaceans</strong> — invertebrate consumers; sensitive to
+      insecticides, especially pyrethroids and organophosphates.</li>
+  <li><strong>Fish</strong> — vertebrate consumers; sensitive to a broad
+      spectrum of organic pollutants.</li>
+</ul>
+<p>
+  Separating groups is important because the rank order of mixture risk
+  frequently differs across taxa: a sample dominated by herbicides may pose
+  negligible risk to fish but acute risk to algae.
+</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     3. SOFTWARE DESCRIPTION
+════════════════════════════════════════════════════════════════════════ -->
+<h2>3. Software Description</h2>
+
+<h3>3.1 Architecture Overview</h3>
+<p>
+  TaxoTox is implemented in R (R Core Team, 2024) as a single-file Shiny
+  application (<code>Code/app.R</code>). The user interface follows Shiny's
+  <code>sidebarLayout</code> convention: a left panel provides the three
+  sequential action controls (upload, calculate, download), and a tabbed right
+  panel displays instructions, CASRN matching, toxicity plots, and toxicity
+  tables. All mutable session state is held in a single
+  <code>reactiveValues</code> object, ensuring that the data flow through the
+  application is explicit and testable.
+</p>
+<p>
+  The data pipeline has two phases: an <strong>offline preparation phase</strong>
+  (run once by the administrator) that builds the toxicity reference database,
+  and an <strong>online session phase</strong> (run every time a user uploads a
+  file) that resolves CASRNs, looks up benchmarks, computes TUs/PTI, and
+  produces outputs.
+</p>
+
+<h3>3.2 Offline Data Preparation</h3>
+<p>
+  The toxicity reference data are pre-processed by <code>taxotox_install.R</code>
+  and stored as a compressed FST file (<code>Data/final_ecotox_data.fst</code>)
+  for fast loading at session start. The preparation pipeline is:
+</p>
+<ol>
+  <li>
+    <strong>Download ECOTOX.</strong> <code>update_ecotox.R</code> calls
+    <code>ECOTOXr::download_ecotox_data()</code> to fetch the latest ECOTOX
+    ASCII release from the EPA website and build a local SQLite cache
+    (&#x223C;3–5 GB; updated approximately quarterly).
+  </li>
+  <li>
+    <strong>Query and filter.</strong> A SQL query via <code>RSQLite</code>
+    joins the <em>results</em>, <em>tests</em>, <em>species</em>, and
+    <em>chemicals</em> tables, retaining only rows where the taxonomic group is
+    fish, algae, or crustacean. Concentration is computed as the minimum across
+    up to three reported concentration columns (<code>conc1_mean</code>,
+    <code>conc2_mean</code>, <code>conc3_mean</code>), falling back to the
+    midpoint of the reported range (<code>conc1_min</code>,
+    <code>conc1_max</code>) when a mean is unavailable.
+  </li>
+  <li>
+    <strong>Normalise units.</strong> ECOTOX uses heterogeneous unit strings
+    including SI names (ng/L, µg/L, mg/L, g/L), common abbreviations (ppt,
+    ppb, ppm, per-mille), and the "AI" (active ingredient) prefix. All are
+    normalised to a canonical form and rows with unsupported units are dropped.
+    Concentrations in units other than ng/L are multiplied by the appropriate
+    factor (×10<sup>3</sup>, ×10<sup>6</sup>, or ×10<sup>9</sup>) to yield
+    <code>conc_ng_L</code>.
+  </li>
+  <li>
+    <strong>Back-transform log-reported values.</strong> ECOTOX encodes some
+    values as log<sub>10</sub>(concentration) under endpoint labels such as
+    "(log)LC50". These are back-transformed (<code>10^conc</code>) before unit
+    conversion.
+  </li>
+  <li>
+    <strong>Filter to LC50/EC50.</strong> Only the two primary acute endpoints
+    are retained. Decorators (asterisk, slash, log prefix) are stripped so that
+    "LC50*", "(log)LC50", and "LC50" are treated equivalently.
+  </li>
+  <li>
+    <strong>Write FST.</strong> The resulting flat table is written to
+    <code>Data/final_ecotox_data.fst</code> at compression level 50.
+    At session start, <code>app.R</code> reads this file and computes
+    <code>median(conc_ng_L)</code> per (<code>cas_number</code>,
+    <code>ecotox_group</code>) to form the denominator table.
+  </li>
+</ol>
+<p>
+  As an alternative to ECOTOX medians, the companion script
+  <code>TaxoToxInstall_AFB.R</code> builds an equivalent FST file using US EPA
+  Aquatic Life Benchmarks (AFB/AIB/ANVPB) as denominators. This is useful for
+  validation because EPA benchmarks were used by Covert et al. (2020) for the
+  NWQN reference PTI calculation.
+</p>
+
+<h3>3.3 CASRN Resolution Pipeline</h3>
+<p>
+  Matching compound names from user-supplied monitoring data to CAS Registry
+  Numbers is a central challenge in automated toxicity assessment, because
+  compound nomenclature is inconsistent across laboratories and reporting
+  systems. TaxoTox resolves names in two sequential layers:
+</p>
+<ol>
+  <li>
+    <strong>Known_CAS (Layer 1 — instant, always on).</strong> An internally
+    curated FST table (<code>Data/Known_CAS.fst</code>) of commonly monitored
+    organic micropollutants, with standardised preferred names and validated
+    CASRNs. Exact string matches (case-insensitive after trimming) are
+    confirmed automatically with no user action.
+  </li>
+  <li>
+    <strong>PubChem REST API (Layer 2 — optional).</strong> When the
+    <em>Web search</em> checkbox is enabled, compound names not resolved in
+    Layer 1 are submitted to the PubChem Compound REST API via the
+    <code>webchem</code> R package. Candidate CASRNs are presented to the user
+    in the CASRN Matching tab for review. No API key is required. An internet
+    connection is required.
+  </li>
+</ol>
+<p>
+  Compounds still unresolved after both layers are listed in the
+  <em>Manual CASRN Entry</em> section. Users can enter any valid CASRN directly;
+  confirmed entries are saved to a session file (<code>temp_CAS.fst</code>) for
+  future integration into <code>Known_CAS.fst</code>.
+</p>
+<p>
+  All newly confirmed CASRNs — from Layer 1, Layer 2, or manual entry — are
+  accumulated in the <code>final_search_results</code> reactive table that
+  drives the toxicity calculation. The '2. Calculate Toxicity' button is
+  programmatically enabled (via <code>shinyjs</code>) only once all uploaded
+  compounds have been resolved or explicitly skipped.
+</p>
+
+<h3>3.4 Toxicity Calculation</h3>
+<p>
+  When the user clicks '2. Calculate Toxicity', the server function:
+</p>
+<ol>
+  <li>
+    Joins the user's concentration matrix (wide format: compounds × stations)
+    with the confirmed CASRN table on compound name.
+  </li>
+  <li>
+    For each confirmed CASRN, retrieves the pre-computed median LC50/EC50
+    (in ng/L) from the denominator table, separately for each of the three
+    taxonomic groups.
+  </li>
+  <li>
+    Computes TU<sub>ijg</sub> = C<sub>ij</sub> / median_LC50<sub>ig</sub> for
+    every compound, sample, and group combination. Compounds absent from the
+    denominator table (no ECOTOX data for that group) are assigned a TU of NA
+    and excluded from the PTI sum.
+  </li>
+  <li>
+    Sums TUs per sample and group to produce PTI<sub>jg</sub>. The result
+    table includes both per-compound TUs and the total PTI column, formatted
+    to three significant figures.
+  </li>
+</ol>
+<p>
+  Calculations for all three taxonomic groups are performed in parallel
+  (using <code>purrr::map</code>) and stored in a named list in the session's
+  reactive state.
+</p>
+
+<h3>3.5 Outputs</h3>
+<p>
+  TaxoTox provides three output channels:
+</p>
+<ul>
+  <li>
+    <strong>Interactive plots (Toxicity Plots tab).</strong> Two panels of
+    bar charts, rendered with <code>ggplot2</code>: (i) the top 10 riskiest
+    samples ranked by descending PTI, one chart per taxonomic group; (ii) the
+    top 10 most toxic compounds per group, ranked by their summed TU across all
+    samples. Plots are generated reactively and update immediately after
+    calculation.
+  </li>
+  <li>
+    <strong>Interactive tables (Toxicity Tables tab).</strong> Three
+    <code>DT</code> DataTables (algae, crustacean, fish) with server-side
+    pagination, column search, and export buttons. Concentrations and TUs are
+    displayed as plain decimal numbers (3 significant figures). The PTI column
+    is colour-coded by risk threshold: orange (PTI 0.1–1.0) and red (PTI
+    ≥ 1.0) to support rapid visual scanning.
+  </li>
+  <li>
+    <strong>Excel workbook download.</strong> A multi-sheet
+    <code>.xlsx</code> file produced by <code>openxlsx</code>:
+    <table>
+      <thead>
+        <tr><th>Sheet</th><th>Content</th></tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td>Original data</td>
+          <td>The uploaded concentration matrix (ng/L) as supplied.</td>
+        </tr>
+        <tr>
+          <td>Algae toxicity</td>
+          <td>Per-compound TUs and total PTI for each sample (algae
+              benchmarks).</td>
+        </tr>
+        <tr>
+          <td>Crustacean toxicity</td>
+          <td>Per-compound TUs and total PTI for each sample (crustacean
+              benchmarks).</td>
+        </tr>
+        <tr>
+          <td>Fish toxicity</td>
+          <td>Per-compound TUs and total PTI for each sample (fish
+              benchmarks).</td>
+        </tr>
+        <tr>
+          <td>CASRN Report</td>
+          <td>All uploaded compound names with their resolved CASRNs,
+              resolution source, and match status.</td>
+        </tr>
+        <tr>
+          <td>Toxicity Coverage</td>
+          <td>Binary matrix indicating, for each compound × taxonomic
+              group combination, whether ECOTOX data were available to
+              compute a TU.</td>
+        </tr>
+      </tbody>
+    </table>
+  </li>
+</ul>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     4. INSTALLATION AND USAGE
+════════════════════════════════════════════════════════════════════════ -->
+<h2>4. Installation and Usage</h2>
+
+<h3>4.1 Prerequisites</h3>
+<p>
+  TaxoTox requires R (&ge; 4.1) and the packages listed in
+  <code>Code/install_dependencies.R</code>. All dependencies are available from
+  CRAN. Install them by running:
+</p>
+<pre>source("Code/install_dependencies.R")</pre>
+<p>
+  The optional <code>webchem</code> package enables PubChem lookups; the app
+  starts and runs fully without it (Layer 2 is silently skipped).
+</p>
+
+<h3>4.2 First-Time Setup</h3>
+<ol>
+  <li>
+    <strong>Download ECOTOX data.</strong> Run <code>Code/update_ecotox.R</code>
+    once. This calls <code>ECOTOXr::download_ecotox_data()</code>, downloads
+    the current ECOTOX ASCII release from the EPA website (several hundred MB),
+    and builds a local SQLite cache. Requires an internet connection and
+    approximately 10–30 minutes.
+  </li>
+  <li>
+    <strong>Build the toxicity reference file.</strong> Run
+    <code>Code/taxotox_install.R</code>. This queries the local SQLite database,
+    applies all filters and unit conversions described in Section 3.2, and
+    writes <code>Data/final_ecotox_data.fst</code>. Requires approximately
+    5–15 minutes depending on database size.
+  </li>
+  <li>
+    <strong>Launch the app.</strong> Open <code>Code/app.R</code> in RStudio
+    and click <em>Run App</em>, or run:
+    <pre>shiny::runApp("Code/app.R")</pre>
+  </li>
+</ol>
+<p>
+  Steps 1 and 2 need to be repeated only when a new ECOTOX release is available
+  (approximately quarterly). Step 3 is run whenever the app is used.
+</p>
+
+<h3>4.3 Session Workflow</h3>
+<ol>
+  <li>
+    <strong>Upload data.</strong> Click '1. Upload Samples Data' and select a
+    CSV, TSV, TXT, XLS, or XLSX file. All concentrations must be in ng/L.
+    Two layouts are supported:
+    <ul>
+      <li><em>Layout A (default)</em>: first column = compound names;
+          subsequent columns = monitoring stations or sample identifiers.</li>
+      <li><em>Layout B</em>: first column = station/sample identifiers;
+          header row = compound names. The app transposes to Layout A
+          automatically.</li>
+    </ul>
+    After upload the app immediately resolves CASRNs and navigates to the
+    CASRN Matching tab.
+  </li>
+  <li>
+    <strong>Review CASRN matches.</strong> If the PubChem search was enabled,
+    candidate matches appear in the table; review them and click
+    'Submit Selected Lines'. Any unresolved compounds appear in the Manual
+    CASRN Entry section. Once all compounds are resolved, the
+    '2. Calculate Toxicity' button becomes active.
+  </li>
+  <li>
+    <strong>Calculate and export.</strong> Click '2. Calculate Toxicity' to
+    run the PTI calculation. Explore results in the Toxicity Plots and
+    Toxicity Tables tabs, then click '3. Download Results' to save the Excel
+    workbook.
+  </li>
+</ol>
+
+<h3>4.4 Input File Requirements</h3>
+<div class="callout">
+  <strong>Important:</strong> All concentration values must be supplied in
+  <strong>ng/L</strong>. The application does not perform input unit
+  conversion; providing values in µg/L or mg/L will produce PTI values that
+  are 10<sup>3</sup> or 10<sup>6</sup> times too small, respectively.
+</div>
+<p>
+  Missing values (NA, empty cells) are treated as zero concentrations and
+  contribute nothing to the PTI. Non-detections should therefore be entered
+  as 0 (or left blank) rather than at the detection limit, consistent with the
+  approach of Covert et al. (2020).
+</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     5. VALIDATION
+════════════════════════════════════════════════════════════════════════ -->
+<h2>5. Validation</h2>
+
+<p>
+  TaxoTox has been validated against PTI values independently computed from
+  the US National Water Quality Network (NWQN) pesticide concentration dataset
+  (Covert et al., 2020). That study computed weekly PTIs at 38 NWQN stream
+  stations (2013–2017) for fish (FISH-PTI) and cladocerans (CLADOCERAN-PTI)
+  using EPA Aquatic Life Benchmarks as denominators.
+</p>
+<p>
+  For validation, the companion script <code>TaxoToxInstall_AFB.R</code> builds
+  a reference dataset using the same EPA benchmarks (Freshwater Fish Acute,
+  Freshwater Invertebrate Acute, and Freshwater Nonvascular Plant Acute) as
+  denominators. The Python script
+  <code>Testing_Taxotox/TaxoTox_Validation.py</code> automates the comparison:
+  it pivots the NWQN concentration table to the wide format expected by TaxoTox,
+  merges TaxoTox-computed PTI values with the published reference PTIs on a
+  shared sample key (station ID + date), and produces regression scatter plots
+  with OLS statistics for fish and crustacean groups.
+</p>
+<p>
+  Using ECOTOX medians (the default denominator) rather than EPA benchmarks
+  produces PTI values on a different absolute scale, but preserves the
+  relative ranking of samples and the identification of high-risk events.
+  Users comparing TaxoTox output against published benchmark-based PTI
+  values should use the AFB-based denominator file for a direct comparison.
+</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     6. REPOSITORY STRUCTURE
+════════════════════════════════════════════════════════════════════════ -->
+<h2>6. Repository Structure</h2>
+
+<table>
+  <thead>
+    <tr><th>File</th><th>Description</th></tr>
+  </thead>
+  <tbody>
+    <tr>
+      <td><code>Code/app.R</code></td>
+      <td>Main Shiny application — UI and server logic.</td>
+    </tr>
+    <tr>
+      <td><code>Code/taxotox_install.R</code></td>
+      <td>Offline pipeline: queries ECOTOX SQLite, filters, normalises units,
+          writes <code>Data/final_ecotox_data.fst</code>.</td>
+    </tr>
+    <tr>
+      <td><code>Code/TaxoToxInstall_AFB.R</code></td>
+      <td>Alternative pipeline using EPA Aquatic Life Benchmarks as
+          denominators (for validation against Covert et al.).</td>
+    </tr>
+    <tr>
+      <td><code>Code/update_ecotox.R</code></td>
+      <td>Downloads the latest ECOTOX release and rebuilds the local SQLite
+          cache (~quarterly).</td>
+    </tr>
+    <tr>
+      <td><code>Code/install_dependencies.R</code></td>
+      <td>Installs all required R packages from CRAN.</td>
+    </tr>
+    <tr>
+      <td><code>Code/validate_benchmarks.R</code></td>
+      <td>Independent validation: re-extracts ECOTOX medians from the SQLite
+          database and compares them against the FST file, producing an HTML
+          report.</td>
+    </tr>
+    <tr>
+      <td><code>Data/Known_CAS.fst</code></td>
+      <td>Curated CASRN lookup table for commonly monitored compounds
+          (Layer 1 of the CASRN resolution pipeline).</td>
+    </tr>
+    <tr>
+      <td><code>Data/final_ecotox_data.fst</code></td>
+      <td>Pre-processed ECOTOX toxicity data (one row per test result,
+          concentrations in ng/L). Generated by
+          <code>taxotox_install.R</code>.</td>
+    </tr>
+    <tr>
+      <td><code>Testing_Taxotox/TaxoTox_Validation.py</code></td>
+      <td>Python script for comparing TaxoTox PTI output against the NWQN
+          reference dataset (Covert et al., 2020).</td>
+    </tr>
+  </tbody>
+</table>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     7. DEPENDENCIES
+════════════════════════════════════════════════════════════════════════ -->
+<h2>7. Dependencies</h2>
+
+<table>
+  <thead>
+    <tr><th>Package</th><th>Role</th></tr>
+  </thead>
+  <tbody>
+    <tr><td><code>shiny</code></td>
+        <td>Web application framework.</td></tr>
+    <tr><td><code>shinyjs</code></td>
+        <td>Programmatic enable/disable of UI elements.</td></tr>
+    <tr><td><code>openxlsx</code>, <code>readxl</code></td>
+        <td>Excel import and export.</td></tr>
+    <tr><td><code>dplyr</code>, <code>tidyr</code>, <code>purrr</code>, <code>stringr</code></td>
+        <td>Tidy data manipulation.</td></tr>
+    <tr><td><code>data.table</code>, <code>fst</code></td>
+        <td>Fast columnar in-memory data manipulation and file I/O.</td></tr>
+    <tr><td><code>ECOTOXr</code>, <code>RSQLite</code></td>
+        <td>ECOTOX database download and SQL interface (offline setup only).</td></tr>
+    <tr><td><code>ggplot2</code>, <code>ggpubr</code>, <code>ggthemes</code>, <code>ggpattern</code>, <code>ggpmisc</code>, <code>hrbrthemes</code>, <code>scales</code></td>
+        <td>Publication-quality visualisation.</td></tr>
+    <tr><td><code>DT</code></td>
+        <td>Interactive DataTables in the Shiny UI.</td></tr>
+    <tr><td><code>webchem</code> (optional)</td>
+        <td>PubChem REST API queries for CASRN resolution (Layer 2).</td></tr>
+  </tbody>
+</table>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     8. LIMITATIONS AND FUTURE WORK
+════════════════════════════════════════════════════════════════════════ -->
+<h2>8. Limitations and Future Work</h2>
+
+<p>
+  The current version of TaxoTox has the following limitations that users
+  should be aware of:
+</p>
+<ul>
+  <li>
+    <strong>Input units.</strong> All concentrations must be provided in ng/L.
+    Automatic unit detection is not implemented; supplying data in other units
+    will produce incorrect PTI values without warning.
+  </li>
+  <li>
+    <strong>Denominator uncertainty.</strong> The ECOTOX database contains
+    highly variable numbers of test results per compound and taxonomic group,
+    from a single test to hundreds. The median denominator may be based on
+    very few observations for less-studied compounds. The Toxicity Coverage
+    sheet in the output workbook flags compounds where the denominator is
+    absent (no ECOTOX data for that group) or based on a small number of
+    tests.
+  </li>
+  <li>
+    <strong>Non-additivity.</strong> The Concentration Addition model assumes
+    additive joint action. For mixtures containing antagonistic compounds the
+    CA model will over-predict risk; for synergistic combinations it may
+    under-predict. TaxoTox is intended as a conservative screening tool, not
+    a substitute for compound-specific toxicity testing.
+  </li>
+  <li>
+    <strong>Marine toxicity data.</strong> The current ECOTOX filter retains
+    all test results regardless of salinity regime. For estuarine or marine
+    monitoring, a filter restricting results to saltwater test species may
+    yield more ecologically relevant denominators.
+  </li>
+  <li>
+    <strong>CASRN resolution coverage.</strong> The Known_CAS table covers
+    compounds commonly reported by European and US freshwater monitoring
+    networks; compounds outside this set require PubChem lookup or manual
+    entry.
+  </li>
+</ul>
+<p>
+  Planned future developments include: automatic unit detection from file
+  metadata, salinity-stratified benchmark selection for marine applications,
+  time-series visualisation for repeated sampling at the same station, and
+  batch processing of multiple input files.
+</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     9. REFERENCES
+════════════════════════════════════════════════════════════════════════ -->
+<h2>9. References</h2>
+
+<p>
+  Covert, S. A., Iwanowicz, L. R., Kolpin, D. W., Blazer, V. S., &amp;
+  Bradley, P. M. (2020). Nationwide reconnaissance of pesticide mixtures in
+  stream water using a nationally representative probabilistic design.
+  <em>Science of the Total Environment</em>, 741, 140506.
+</p>
+<p>
+  Könemann, H. (1981). Quantitative structure-activity relationships in fish
+  toxicity studies. Part 1: Relationship for 50 industrial pollutants.
+  <em>Toxicology</em>, 19(3), 209–221.
+</p>
+<p>
+  Moschet, C., Wittmer, I., Simovic, J., Junghans, M., Piazzoli, A.,
+  Singer, H., Stamm, C., Leu, C., &amp; Hollender, J. (2014). How a complete
+  pesticide screening changes the assessment of surface water quality.
+  <em>Environmental Science &amp; Technology</em>, 48(10), 5423–5432.
+</p>
+<p>
+  R Core Team (2024). <em>R: A Language and Environment for Statistical
+  Computing</em>. R Foundation for Statistical Computing, Vienna, Austria.
+  <a href="https://www.R-project.org/">https://www.R-project.org/</a>
+</p>
+<p>
+  SCHER, SCENIHR, SCCS. (2012). <em>Toxicity and Assessment of Chemical
+  Mixtures</em>. Scientific Committee on Health and Environmental Risks,
+  European Commission.
+</p>
+<p>
+  Sprague, J. B. (1970). Measurement of pollutant toxicity to fish. II.
+  Utilizing and applying bioassay results. <em>Water Research</em>,
+  4(1), 3–32.
+</p>
+<p>
+  Sprague, J. B., &amp; Ramsay, B. A. (1965). Lethal levels of mixed
+  copper–zinc solutions for juvenile salmon. <em>Journal of the Fisheries
+  Research Board of Canada</em>, 22(2), 425–432.
+</p>
+<p>
+  Stehle, S., &amp; Schulz, R. (2015). Agricultural insecticides threaten
+  surface waters at the global scale. <em>Proceedings of the National Academy
+  of Sciences</em>, 112(18), 5750–5755.
+</p>
+<p>
+  US EPA (2000). <em>Supplementary Guidance for Conducting Health Risk
+  Assessment of Chemical Mixtures</em>. EPA/630/R-00/002. Office of Research
+  and Development, Washington, DC.
+</p>
+<p>
+  US EPA (2024). <em>ECOTOX Knowledgebase</em>.
+  <a href="https://cfpub.epa.gov/ecotox/">https://cfpub.epa.gov/ecotox/</a>.
+  US Environmental Protection Agency.
+</p>
+
+
+<!-- ═══════════════════════════════════════════════════════════════════════
+     FOOTER
+════════════════════════════════════════════════════════════════════════ -->
+<footer>
+  <p>
+    TaxoTox is released under the MIT License.<br />
+    Repository: School of Marine Sciences, Ruppin Academic Center, Israel.<br />
+    Authors: Noam Greenwald, Yair Suari.
+  </p>
+</footer>
+
+</body>
+</html>

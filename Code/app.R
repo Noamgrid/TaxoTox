@@ -3,56 +3,71 @@
 # =============================================================================
 #
 # PURPOSE:
-#   TaxoTox calculates the potential mixture toxicity of environmental pollutant
-#   assemblages using the Toxic Unit (TU) framework and the Pollution Toxicity
-#   Index (PTI). For each monitoring station and each taxonomic group (algae,
-#   crustaceans, fish), it derives per-compound TUs by dividing the measured
-#   concentration by the median chronic effect concentration retrieved from the
-#   US EPA ECOTOX database. The PTI for a sample is then the sum of all TUs
-#   multiplied by 100, providing a dimensionless index of chronic mixture risk.
+#   TaxoTox assesses the potential mixture toxicity of environmental pollutant
+#   assemblages at monitoring stations using the Toxic Unit (TU) framework and
+#   the Pollution Toxicity Index (PTI). For each sample and each taxonomic
+#   group (algae, crustaceans, fish), it computes per-compound TUs by dividing
+#   the measured concentration by the median acute effect concentration
+#   (LC50/EC50) retrieved from the pre-processed US EPA ECOTOX database.
+#   The PTI is the dimensionless sum of all TUs for a sample and taxonomic
+#   group — a value ≥ 1 indicates that the mixture may cause acute effects,
+#   while ≥ 0.1 indicates potential chronic risk.
 #
 # METHODOLOGY:
-#   Toxic Unit (TU) for compound i in sample j:
-#       TU_ij = C_ij / EC50_i
-#   where C_ij is the measured concentration (ng/L) and EC50_i is the median
-#   chronic effect concentration for the relevant taxonomic group (ng/L).
+#   Toxic Unit (TU) for compound i in sample j, taxonomic group g:
+#       TU_ijg = C_ij / median_LC50_ig
+#   where C_ij  = measured concentration of compound i in sample j (ng/L)
+#         median_LC50_ig = median of all LC50/EC50 values in ECOTOX for
+#                          compound i and group g (ng/L).
 #
-#   Pollution Toxicity Index (PTI) for sample j:
-#       PTI_j = sum(TU_ij, for all i) * 100
+#   Pollution Toxicity Index (PTI) for sample j and group g:
+#       PTI_jg = Σ TU_ijg   (sum over all detected compounds i)
 #
-# WORKFLOW:
-#   1. User uploads a concentration table (CSV, TSV, XLS, XLSX).
-#   2. The app automatically resolves compound names to CAS Registry Numbers
-#      (CASRNs) via a four-layer lookup pipeline:
-#        a. Exact match in the curated Known_CAS table (fastest, most reliable).
-#        b. Exact name match in the full EPA DSSTox substance registry (covers
-#           compounds in DSSTox but not yet in Known_CAS).
-#        c. Live PubChem query via the webchem package — queries the PubChem
-#           REST API by compound name and extracts the CAS number from the
-#           synonym list (no API key required).
-#        d. Jaro-Winkler fuzzy match against DSSTox (fallback for spelling
-#           variants and abbreviations).
-#      Matches from layers b–d are shown in the 'CASRN Matching' tab for user
-#      review. Compounds unresolved by all layers go to Manual Entry.
-#   3. The user clicks "Calculate Toxicity" to compute TUs and PTI values.
-#   4. Results are displayed as interactive tables and bar/box plots, and
-#      exported as a multi-sheet Excel workbook.
+# CASRN RESOLUTION PIPELINE:
+#   Compound names from the user's file are mapped to CAS Registry Numbers
+#   (CASRNs) in two sequential layers:
+#     Layer 1 — Known_CAS (exact, instant): curated internal table of
+#               commonly monitored compounds. Confirmed automatically.
+#     Layer 2 — PubChem REST API (optional, requires internet): queries
+#               the PubChem compound database via the webchem R package.
+#               Candidates are presented for user review in the
+#               'CASRN Matching' tab. Enabled by the "Web search" checkbox.
+#   Compounds still unresolved after all layers can be assigned CASRNs
+#   manually in the 'CASRN Matching' tab → Manual CASRN Entry section.
 #
-# DATA SOURCES:
-#   - Known_CAS.fst   : Curated internal CASRN lookup table.
-#   - DSSTox.fst      : EPA DSSTox substance registry (for fuzzy fallback).
-#   - final_ecotox_data.fst : Pre-processed ECOTOX chronic endpoint data
-#                             (median effect concentrations per compound and
-#                             taxonomic group, in ng/L).
+# ECOTOX DATA PREPARATION:
+#   final_ecotox_data.fst is built once by running taxotox_install.R.
+#   That script queries the local ECOTOXr SQLite cache, retains only
+#   LC50/EC50 endpoints for fish, algae, and crustaceans, applies unit
+#   conversions to ng/L, and back-transforms (log)-reported values.
+#   The resulting flat table is stored as an fst file for fast session
+#   loading. Run update_ecotox.R every ~3 months to refresh the database.
 #
-# AUTHORS: Noam [surname], Yair Suari
-# CONTACT: [institution contact]
-# LICENSE: [license]
+# OUTPUT:
+#   - Interactive per-sample and per-pollutant bar/box plots (ggplot2).
+#   - Searchable DataTables with PTI colour-coded by risk threshold.
+#   - Multi-sheet Excel workbook: original data, three toxicity sheets
+#     (algae, crustacean, fish), CASRN report, toxicity coverage matrix.
+#
+# FILES:
+#   Code/app.R               — this file (Shiny application)
+#   Code/taxotox_install.R   — builds final_ecotox_data.fst from ECOTOX
+#   Code/TaxoToxInstall_AFB.R— builds final_ecotox_data.fst from EPA
+#                              Aquatic Life Benchmarks (validation only)
+#   Code/update_ecotox.R     — downloads latest ECOTOX database (~quarterly)
+#   Code/install_dependencies.R — installs all required R packages
+#   Data/Known_CAS.fst       — curated CASRN lookup table
+#   Data/final_ecotox_data.fst — pre-processed ECOTOX toxicity data
+#
+# AUTHORS: Noam Gridish, Yair Suari
+#          School of Marine Sciences, Ruppin Academic Center, Israel
+# LICENSE: MIT
 # =============================================================================
 
 # ── Dependencies ──────────────────────────────────────────────────────────────
 # Core Shiny framework
 library(shiny)
+library(shinyjs)
 # Excel import / export
 library(openxlsx)
 library(readxl)
@@ -65,8 +80,6 @@ library(stringr)
 # Fast columnar data storage (data.table and fst)
 library(data.table)
 library(fst)
-# String distance for fuzzy compound-name matching
-library(stringdist)
 # ECOTOX database interface (used during data pre-processing, not at runtime)
 library(ECOTOXr)
 library(RSQLite)
@@ -101,6 +114,8 @@ options(shiny.maxRequestSize = 500 * 1024^2)
 
 ui <- fluidPage(
 
+    useShinyjs(),
+
     titlePanel("TaxoTox"),
 
     sidebarLayout(
@@ -116,6 +131,7 @@ ui <- fluidPage(
                           ".csv", ".xlsx", ".xls", ".txt", ".tsv"
                       ),
                       width = "100%"),
+            uiOutput("step1_status"),
 
             # ── Data layout selector ─────────────────────────────────────────
             # Users commonly supply data in one of two orientations:
@@ -133,6 +149,7 @@ ui <- fluidPage(
             actionButton("start_toxicity_calc", "2. Calculate Toxicity",
                          class = "btn-default btn-block",
                          style = "margin-top:10px;"),
+            uiOutput("step2_status"),
 
             # ── Step 3: Export results ───────────────────────────────────────
             downloadButton("download_results", "3. Download Results",
@@ -140,15 +157,6 @@ ui <- fluidPage(
                            style = "margin-top:10px;"),
             hr(),
 
-            # ── Advanced: fuzzy-match threshold ─────────────────────────────
-            # Controls the Jaro-Winkler distance cutoff used when searching
-            # DSSTox for compound names not found in the Known_CAS table.
-            # Lower values require a closer match (stricter); higher values
-            # accept more distant matches (more lenient, higher false-positive
-            # rate). The default of 0.1 is conservative.
-            numericInput("fuzzy_threshold",
-                         "Fuzzy match sensitivity (0 = identical only, 0.3 = lenient)",
-                         value = 0.1, min = 0.0, max = 0.5, step = 0.05),
             checkboxInput("use_pubchem", "Web search for pollutant names on/off", value = FALSE)
         ),
 
@@ -160,19 +168,27 @@ ui <- fluidPage(
                         h3("Workflow"),
                         p("Follow the three steps in the sidebar to analyse your data:"),
                         tags$ol(
-                            tags$li(strong("Select your data layout"), " using the radio buttons, then click ",
-                                    strong("'1. Upload Samples Data'"), " to load your file. The app will immediately attempt to identify all chemical compounds automatically."),
-                            tags$li(strong("Resolve any unmatched compounds"), " in the 'CASRN Matching' tab if it appears, then click ",
-                                    strong("'2. Calculate Toxicity'")),
-                            tags$li("View results in the ", strong("'Toxicity Plots'"), " and ", strong("'Toxicity Tables'"),
-                                    " tabs, then click ", strong("'3. Download Results'"), " to export an Excel workbook.")
+                            tags$li(
+                                strong("Upload your data."), " Select the correct data layout using the radio buttons, then click ",
+                                strong("'1. Upload Samples Data'"), ". The app immediately searches for CAS Registry Numbers (CASRNs) for all compounds and navigates to the CASRN Matching tab."
+                            ),
+                            tags$li(
+                                strong("Review CASRN matches."), " In the ", strong("'CASRN Matching'"), " tab, verify any PubChem candidates using the checkboxes and click ", strong("'Submit Selected Lines'"), ". If any compounds remain unmatched, enter their CASRNs in the ", strong("'Manual CASRN Entry'"), " section below the table. Once all compounds are resolved, the '2. Calculate Toxicity' button becomes active."
+                            ),
+                            tags$li(
+                                strong("Calculate and export."), " Click ", strong("'2. Calculate Toxicity'"), " to run the PTI calculation. Results appear in the ",
+                                strong("'Toxicity Plots'"), " and ", strong("'Toxicity Tables'"), " tabs. Click ",
+                                strong("'3. Download Results'"), " to export a multi-sheet Excel workbook."
+                            )
                         ),
 
                         h4("Input File Format"),
-                        p("Accepted formats: CSV, TSV, TXT, XLS, XLSX. Concentrations must be in ", strong("ng/L.")),
+                        p("Accepted formats: CSV, TSV, TXT, XLS, XLSX.",
+                          strong(" All concentrations must be in ng/L."),
+                          " The first column must be either compound names (Layout A) or sample/station identifiers (Layout B)."),
 
                         h5("Layout A — Pollutant names in first column (default)"),
-                        p("Each row is a compound; each subsequent column is a monitoring station or sample."),
+                        p("Each row is a compound; each subsequent column is a monitoring station or sample identifier."),
                         tags$pre(paste(
                             "Compound    | Station1 | Station2 | ...",
                             "Caffeine    | 10.5     | 18.2     | ...",
@@ -182,55 +198,84 @@ ui <- fluidPage(
                         )),
 
                         h5("Layout B — Station names in first column"),
-                        p("Each row is a monitoring station; compound names are in the header row. The app transposes this automatically."),
+                        p("Each row is a monitoring station; compound names are in the header row. The app automatically transposes this matrix to Layout A before processing."),
                         tags$pre(paste(
                             "Station  | Caffeine | Atrazine | Bisphenol A | ...",
                             "Station1 | 10.5     |  2.1     |  2.1        | ...",
                             "Station2 | 18.2     |  0.5     |  0.3        | ...",
                             sep = "\n"
                         )),
+                        p(em("Note: if the app detects that more than 75% of names in the first column are unrecognised, it will offer to transpose the data automatically.")),
 
                         h4("CASRN Identification"),
-                        p("On upload, the app automatically resolves compound names to CAS Registry Numbers (CASRNs) via a four-layer pipeline:"),
+                        p("On upload, compound names are resolved to CAS Registry Numbers (CASRNs) via two sequential layers:"),
                         tags$ol(
-                            tags$li(strong("Known_CAS (exact):"), " a curated internal table of commonly monitored compounds. Matches are confirmed automatically — no review needed."),
-                            tags$li(strong("DSSTox (exact):"), " the full EPA DSSTox substance registry. Compounds found here by exact name are added to the review table pre-checked."),
-                            tags$li(strong("PubChem (API):"), " live query of the PubChem REST API via the webchem package. Requires an internet connection; no API key needed. Matches are pre-checked."),
-                            tags$li(strong("DSSTox (fuzzy):"), " Jaro-Winkler string-distance search against DSSTox for spelling variants and abbreviations. These matches start unchecked — review each suggestion carefully.")
+                            tags$li(
+                                strong("Known_CAS (instant, always on):"),
+                                " a curated internal table of commonly monitored organic micropollutants. Exact-name matches are confirmed automatically with no user action required."
+                            ),
+                            tags$li(
+                                strong("PubChem REST API (optional):"),
+                                " live query of the PubChem compound database via the webchem R package. Enable with the 'Web search' checkbox. Requires an internet connection; no API key needed.",
+                                " Candidate matches are shown in the CASRN Matching tab for review."
+                            )
                         ),
-                        p("All layer 2–4 candidates are shown together in the 'CASRN Matching' tab, grouped by source. Accept or reject each one using the checkboxes, then click Submit. Compounds rejected or not found by any layer go to the 'Manual Entry' tab."),
+                        p("Compounds still unresolved after both layers appear in the ",
+                          strong("'Manual CASRN Entry'"), " section of the CASRN Matching tab. Enter the correct CASRN (e.g. 107-13-1) and click 'Add CASRN'. All newly confirmed CASRNs are saved to a session file (temp_CAS.fst) for future integration into Known_CAS."),
 
                         h4("Toxicity Calculation"),
-                        p("For each compound and taxonomic group (algae, crustaceans, fish), the app retrieves chronic effect concentrations from the pre-processed ECOTOX database and computes the Toxic Unit:"),
-                        tags$pre("TU = measured concentration (ng/L) / median ECOTOX effect concentration (ng/L)"),
-                        p("The Pollution Toxicity Index (PTI) for each sample is the sum of all individual TUs multiplied by 100:"),
-                        tags$pre("PTI = \u03a3 TU\u1d62 \u00d7 100"),
-                        p("A PTI > 1 suggests the mixture may pose a chronic risk to the relevant taxonomic group."),
+                        p("For each compound i, sample j, and taxonomic group g (algae, crustaceans, fish), the Toxic Unit is:"),
+                        tags$pre("TU\u1d62\u2C7C\u1d4D = C\u1d62\u2C7C (ng/L)  /  median\u2080 LC50\u1d62\u1d4D (ng/L)"),
+                        p("where the denominator is the median of all LC50 and EC50 values for compound i and group g in the pre-processed ECOTOX database (", em("final_ecotox_data.fst"), ")."),
+                        p("The Pollution Toxicity Index (PTI) for sample j and group g is the sum of all TUs:"),
+                        tags$pre("PTI\u2C7C\u1d4D = \u03a3\u1d62 TU\u1d62\u2C7C\u1d4D"),
 
-                        p(em("Tip: Lower the 'Fuzzy match sensitivity' value in the sidebar for stricter compound-name matching; raise it if legitimate compounds are being missed."))
+                        h4("Risk Interpretation"),
+                        tags$table(style = "border-collapse:collapse; margin-bottom:12px;",
+                            tags$tr(
+                                tags$th(style = "border:1px solid #ccc; padding:4px 10px; background:#f5f5f5;", "PTI"),
+                                tags$th(style = "border:1px solid #ccc; padding:4px 10px; background:#f5f5f5;", "Interpretation")
+                            ),
+                            tags$tr(
+                                tags$td(style = "border:1px solid #ccc; padding:4px 10px; color:#B71C1C; font-weight:bold;", "\u2265 1.0"),
+                                tags$td(style = "border:1px solid #ccc; padding:4px 10px;", "Acute risk — mixture may cause lethal or immobilisation effects")
+                            ),
+                            tags$tr(
+                                tags$td(style = "border:1px solid #ccc; padding:4px 10px; color:#E65100; font-weight:bold;", "0.1 \u2013 1.0"),
+                                tags$td(style = "border:1px solid #ccc; padding:4px 10px;", "Chronic risk — sub-lethal effects on sensitive species possible")
+                            ),
+                            tags$tr(
+                                tags$td(style = "border:1px solid #ccc; padding:4px 10px;", "< 0.1"),
+                                tags$td(style = "border:1px solid #ccc; padding:4px 10px;", "Low risk — mixture unlikely to cause measurable toxicity")
+                            )
+                        ),
+                        p(em("PTI values \u2265 0.1 are highlighted orange; \u2265 1.0 are highlighted red in the Toxicity Tables tab.")),
+
+                        h4("Output"),
+                        p("The downloaded Excel workbook contains six sheets:"),
+                        tags$ul(
+                            tags$li(strong("Original data"), " — the uploaded concentration matrix (ng/L)."),
+                            tags$li(strong("Algae / Crustacean / Fish toxicity"), " — per-compound TUs and PTI for each sample."),
+                            tags$li(strong("CASRN Report"), " — matched and unmatched compound list with CASRNs."),
+                            tags$li(strong("Toxicity Coverage"), " — colour-coded matrix showing which taxonomic groups have ECOTOX data for each compound.")
+                        )
                         ),
                tabPanel("CASRN Matching",
                         h4("Search Summary"),
                         verbatimTextOutput("cas_search_summary"),
                         hr(),
                         h4("Candidate Matches"),
-                        p("DSSTox exact and PubChem matches (100%) are pre-checked. DSSTox fuzzy (partial) matches start unchecked — review and check any you wish to accept, then click Submit."),
+                        p("PubChem matches (100%) are pre-checked. Review each suggestion and uncheck any you wish to reject, then click Submit."),
                         DTOutput("fuzzy_match_table"),
                         br(),
                         actionButton("submit_fuzzy_matches", "Submit Selected Lines", class = "btn-primary"),
-                        hr()
-                        ),
-
-               # ── Manual Entry tab ─────────────────────────────────────────
-               # Shown when one or more compounds could not be matched
-               # automatically. The tab is always present but shows a
-               # "nothing to do" message when all compounds are resolved.
-               tabPanel("Manual Entry",
+                        hr(),
+                        h4("Manual CASRN Entry"),
                         uiOutput("manual_entry_tab_ui")
                         ),
 
                tabPanel("Toxicity Plots",
-                        h4("Top 10 Riskiest Samples (by Risk Assessment score)"),
+                        h4("Top 10 Riskiest Samples (by PTI)"),
                         plotOutput("algae_sample_plot"),
                         plotOutput("crustacean_sample_plot"),
                         plotOutput("fish_sample_plot"),
@@ -278,16 +323,49 @@ server <- function(input, output, session) {
     )
 
     # ── Static reference data (loaded once at session start) ─────────────────
-    # Known_CAS       : Curated table of compound name → CASRN mappings built
-    #                   from prior runs and administrator-approved user entries.
-    # DSSTox          : EPA DSSTox substance registry; used as fallback when a
-    #                   compound name is absent from Known_CAS.
-    # final_ecotox_data: Pre-processed ECOTOX data containing median chronic
-    #                   effect concentrations (conc_ng_L) per compound
-    #                   (cas_number) and taxonomic group (ecotox_group).
+    # Known_CAS        : Curated table of compound name → CASRN mappings.
+    # final_ecotox_data: Pre-processed ECOTOX data containing median acute
+    #                    LC50/EC50 (conc_ng_L) per compound (cas_number) and
+    #                    taxonomic group (ecotox_group).
     Known_CAS         <- read.fst("../Data/Known_CAS.fst",         as.data.table = TRUE)
-    DSSTox            <- read.fst("../Data/DSSTox.fst",            as.data.table = TRUE)
     final_ecotox_data <- read.fst("../Data/final_ecotox_data.fst", as.data.table = TRUE)
+
+    # ── Button state management (D) ───────────────────────────────────────────
+    # Disable buttons 2 and 3 at startup; enable reactively as prerequisites met.
+    shinyjs::disable("start_toxicity_calc")
+    shinyjs::disable("download_results")
+
+    observe({
+        casrn_ready <- nrow(v$final_search_results) > 0 &&
+            (is.null(v$fuzzy_to_review) || nrow(v$fuzzy_to_review) == 0)
+        if (casrn_ready) shinyjs::enable("start_toxicity_calc")
+        else             shinyjs::disable("start_toxicity_calc")
+    })
+
+    observe({
+        if (!is.null(v$tox_results)) shinyjs::enable("download_results")
+        else                         shinyjs::disable("download_results")
+    })
+
+    # ── Sidebar status badges (E) ─────────────────────────────────────────────
+    output$step1_status <- renderUI({
+        req(v$p_vector)
+        n_total   <- length(v$p_vector)
+        n_matched <- nrow(v$final_search_results)
+        color <- if (n_matched == n_total) "#2a7a2a" else "#b36200"
+        tags$p(
+            style = paste0("color:", color, "; font-size:0.85em; margin:2px 0 6px 0;"),
+            paste0("\u2713 ", n_matched, " / ", n_total, " compounds matched")
+        )
+    })
+
+    output$step2_status <- renderUI({
+        req(v$tox_results)
+        tags$p(
+            style = "color:#2a7a2a; font-size:0.85em; margin:2px 0 6px 0;",
+            "\u2713 Toxicity calculated"
+        )
+    })
 
     # =========================================================================
     # HELPER FUNCTIONS
@@ -328,50 +406,9 @@ server <- function(input, output, session) {
         write.fst(updated_dt, temp_cas_path)
     }
 
-    # ── fuzzy_match_non_interactive ───────────────────────────────────────────
-    # For each name in source_names that was not found by exact lookup, computes
-    # the Jaro-Winkler string distance to all entries in target_dt[[match_col]]
-    # and returns the single closest match if it falls within 'threshold'.
-    #
-    # The Jaro-Winkler metric (range 0–1) gives extra weight to prefix
-    # similarity, making it well-suited to chemical nomenclature where names
-    # commonly share long common prefixes (e.g. "benzo[a]pyrene" vs
-    # "benzo[b]pyrene"). A threshold of 0.1 corresponds to very close matches;
-    # 0.3 accepts moderately different strings.
-    #
-    # Returns a data.table with columns: source_name, matched_name, distance,
-    # CASRN. Returns an empty data.table if no matches pass the threshold.
-    fuzzy_match_non_interactive <- function(source_names, target_dt, match_col, threshold = 0.2) {
-        results <- list()
-        for (i in seq_along(source_names)) {
-            name <- source_names[i]
-            if (is.na(name)) next
-            valid_targets <- target_dt[[match_col]][!is.na(target_dt[[match_col]])]
-            if (length(valid_targets) == 0) next
-            distances <- stringdist(name, valid_targets, method = "jw")
-            if (length(distances) > 0 && !all(is.na(distances))) {
-                min_dist <- min(distances, na.rm = TRUE)
-                if (!is.na(min_dist) && min_dist <= threshold) {
-                    best_idx  <- which.min(distances)
-                    best_match   <- valid_targets[best_idx]
-                    casrn_number <- target_dt[get(match_col) == best_match, CASRN][1]
-                    results[[length(results) + 1]] <- data.table(
-                        source_name  = name,
-                        matched_name = best_match,
-                        distance     = min_dist,
-                        CASRN        = casrn_number
-                    )
-                }
-            }
-        }
-        if (length(results) > 0) return(rbindlist(results))
-        return(data.table())
-    }
-
     # ── pubchem_lookup ────────────────────────────────────────────────────────
     # Queries the PubChem REST API (via the webchem package) for CAS Registry
-    # Numbers for compound names that could not be resolved by Known_CAS or
-    # DSSTox exact match.
+    # Numbers for compound names that could not be resolved by Known_CAS.
     #
     # For each name the function:
     #   1. Calls webchem::get_cid() to search PubChem by compound name and
@@ -444,54 +481,27 @@ server <- function(input, output, session) {
     }
 
     # ── run_casrn_layers2to4 ──────────────────────────────────────────────────
-    # Runs layers 2–4 of the CASRN pipeline on `unfound` (compounds not matched
-    # in Layer 1 / Known_CAS). Builds the review table and updates v$summary_log.
-    # Closes any open modal before starting. Accesses v, input, session via closure.
+    # Runs layer 2 (PubChem) of the CASRN pipeline on `unfound` (compounds not
+    # matched in Layer 1 / Known_CAS). Builds the review table and updates
+    # v$summary_log. Closes any open modal before starting.
+    # Accesses v, input, session via closure.
     run_casrn_layers2to4 <- function(unfound) {
         removeModal()
-        withProgress(message = "Searching for CASRNs (layers 2\u20134)", value = 0, {
+        withProgress(message = "Searching for CASRNs (layer 2)", value = 0, {
         tryCatch({
 
-            # ── Layer 2: DSSTox exact ────────────────────────────────────────
-            dsstox_exact_rows <- data.table()
-            if (length(unfound) > 0) {
-                setProgress(0.15, detail = paste("Layer 2: DSSTox exact (",
-                                                 length(unfound), "remaining)..."))
-                dsstox_exact_hits <- unique(
-                    DSSTox[DSSTox$PREFERRED_NAME %in% unfound, .(PREFERRED_NAME, CASRN)],
-                    by = "PREFERRED_NAME"
-                )
-                if (nrow(dsstox_exact_hits) > 0) {
-                    dsstox_exact_rows <- data.table(
-                        source_name  = dsstox_exact_hits$PREFERRED_NAME,
-                        matched_name = dsstox_exact_hits$PREFERRED_NAME,
-                        distance     = 0,
-                        CASRN        = dsstox_exact_hits$CASRN,
-                        source       = "DSSTox (exact)"
-                    )
-                    unfound <- unfound[!unfound %in% dsstox_exact_hits$PREFERRED_NAME]
-                    v$summary_log <- c(v$summary_log,
-                                       paste("Layer 2 (DSSTox exact):", nrow(dsstox_exact_rows),
-                                             "matches;", length(unfound), "remaining."))
-                } else {
-                    v$summary_log <- c(v$summary_log,
-                                       paste("Layer 2 (DSSTox exact): no matches;",
-                                             length(unfound), "remaining."))
-                }
-            }
-
-            # ── Layer 3: PubChem via webchem ─────────────────────────────────
+            # ── Layer 2: PubChem via webchem ─────────────────────────────────
             pubchem_rows <- data.table()
             if (length(unfound) > 0) {
                 if (!webchem_available || !isTRUE(input$use_pubchem)) {
                     v$summary_log <- c(v$summary_log, if (!webchem_available)
-                        "Layer 3 (PubChem): skipped \u2014 webchem not installed." else
-                        "Layer 3 (PubChem): skipped (web search is off).")
+                        "Layer 2 (PubChem): skipped \u2014 webchem not installed." else
+                        "Layer 2 (PubChem): skipped (web search is off).")
                 } else {
-                    setProgress(0.45, detail = paste("Layer 3: PubChem query (",
+                    setProgress(0.40, detail = paste("Layer 2: PubChem query (",
                                                      length(unfound), "compounds)..."))
                     v$summary_log <- c(v$summary_log,
-                                       paste("Layer 3 (PubChem): querying",
+                                       paste("Layer 2 (PubChem): querying",
                                              length(unfound), "compounds (may take a moment)..."))
                     wc <- pubchem_lookup(unfound)
                     if (nrow(wc) > 0) {
@@ -504,42 +514,13 @@ server <- function(input, output, session) {
                         )
                         unfound <- unfound[!unfound %in% wc$source_name]
                         v$summary_log <- c(v$summary_log,
-                                           paste("Layer 3 (PubChem):", nrow(pubchem_rows),
+                                           paste("Layer 2 (PubChem):", nrow(pubchem_rows),
                                                  "matches;", length(unfound), "remaining."))
                     } else {
                         v$summary_log <- c(v$summary_log,
-                                           paste("Layer 3 (PubChem): no matches;",
+                                           paste("Layer 2 (PubChem): no matches;",
                                                  length(unfound), "remaining."))
                     }
-                }
-            }
-
-            # ── Layer 4: DSSTox fuzzy ────────────────────────────────────────
-            fuzzy_rows <- data.table()
-            if (length(unfound) > 0) {
-                setProgress(0.70, detail = paste("Layer 4: fuzzy matching (",
-                                                 length(unfound), "remaining)..."))
-                v$summary_log <- c(v$summary_log,
-                                   paste("Layer 4 (DSSTox fuzzy): searching",
-                                         length(unfound), "compounds..."))
-                fm <- fuzzy_match_non_interactive(
-                    unfound, DSSTox, "PREFERRED_NAME",
-                    threshold = input$fuzzy_threshold
-                )
-                fm <- fm[fm$distance > 0, ]
-                if (nrow(fm) > 0) {
-                    fuzzy_rows <- data.table(
-                        source_name  = fm$source_name,
-                        matched_name = fm$matched_name,
-                        distance     = fm$distance,
-                        CASRN        = fm$CASRN,
-                        source       = "DSSTox (fuzzy)"
-                    )
-                    v$summary_log <- c(v$summary_log,
-                                       paste("Layer 4 (DSSTox fuzzy):", nrow(fuzzy_rows),
-                                             "partial matches for review."))
-                } else {
-                    v$summary_log <- c(v$summary_log, "Layer 4 (DSSTox fuzzy): no matches.")
                 }
             }
 
@@ -556,10 +537,9 @@ server <- function(input, output, session) {
                 )
             } else { data.table() }
 
-            truly_unfound <- unfound[!unfound %in% fuzzy_rows$source_name]
-            manual_rows <- if (length(truly_unfound) > 0) {
+            manual_rows <- if (length(unfound) > 0) {
                 data.table(
-                    source_name  = truly_unfound,
+                    source_name  = unfound,
                     matched_name = NA_character_,
                     distance     = NA_real_,
                     CASRN        = NA_character_,
@@ -567,13 +547,13 @@ server <- function(input, output, session) {
                 )
             } else { data.table() }
 
-            if (length(truly_unfound) > 0)
+            if (length(unfound) > 0)
                 v$summary_log <- c(v$summary_log,
-                                   paste(length(truly_unfound),
+                                   paste(length(unfound),
                                          "compound(s) need manual CASRN entry."))
 
             review_rows <- rbindlist(
-                list(manual_rows, fuzzy_rows, pubchem_rows, dsstox_exact_rows, known_cas_rows),
+                list(manual_rows, pubchem_rows, known_cas_rows),
                 use.names = TRUE, fill = TRUE
             )
 
@@ -581,11 +561,11 @@ server <- function(input, output, session) {
 
             if (nrow(review_rows) > 0) {
                 v$fuzzy_to_review <- review_rows
-                n_need_action <- nrow(manual_rows) + nrow(fuzzy_rows)
+                n_need_action <- nrow(manual_rows)
                 v$summary_log <- c(v$summary_log,
                                    paste("Done. Review table:", nrow(review_rows),
                                          "rows total;", n_need_action,
-                                         "need attention (Manual / fuzzy)."),
+                                         "need attention (Manual)."),
                                    if (n_need_action == 0)
                                        ">> Ready! Click '2. Calculate Toxicity' to proceed."
                                    else
@@ -599,7 +579,7 @@ server <- function(input, output, session) {
 
             setProgress(1.0, detail = "Complete.")
 
-            n_action <- nrow(manual_rows) + nrow(fuzzy_rows)
+            n_action <- nrow(manual_rows)
             if (n_action == 0) {
                 showNotification("Matching complete \u2014 click '2. Calculate Toxicity'",
                                  type = "message", duration = 6)
@@ -664,11 +644,9 @@ server <- function(input, output, session) {
     # =========================================================================
     # Triggered when the user selects a file. Performs:
     #   1. File parsing and optional matrix transposition (layout B → layout A).
-    #   2. Four-layer CASRN resolution pipeline:
+    #   2. Two-layer CASRN resolution pipeline:
     #        Layer 1 — exact match in Known_CAS (auto-confirmed, no review).
-    #        Layer 2 — exact match in DSSTox (pre-checked in review table).
-    #        Layer 3 — PubChem live API query via webchem (pre-checked).
-    #        Layer 4 — Jaro-Winkler fuzzy match in DSSTox (unchecked).
+    #        Layer 2 — PubChem live API query via webchem (pre-checked).
     #   3. Navigation to the 'CASRN Matching' tab if any candidates exist,
     #      or directly to 'Manual Entry' if no matches were found at all.
     observeEvent(input$user_file, {
@@ -799,15 +777,11 @@ server <- function(input, output, session) {
     # Renders ALL compounds in a single DataTable, ordered so the ones needing
     # the most user attention appear first:
     #
-    #   Row section  | Source          | Accept col       | CASRN col
-    #   -------------|-----------------|------------------|------------------
-    #   1 (top)      | Manual          | checkbox (off)   | editable textInput
-    #   2            | DSSTox (fuzzy)  | checkbox (off)   | editable textInput
-    #                |                 |                  |   (pre-filled with
-    #                |                 |                  |    fuzzy suggestion)
-    #   3            | PubChem         | checkbox (on)    | static text
-    #   4            | DSSTox (exact)  | checkbox (on)    | static text
-    #   5 (bottom)   | Known_CAS       | "✓ Auto"         | static text
+    #   Row section  | Source    | Accept col       | CASRN col
+    #   -------------|-----------|------------------|------------------
+    #   1 (top)      | Manual    | checkbox (off)   | editable textInput
+    #   2            | PubChem   | checkbox (on)    | static text
+    #   3 (bottom)   | Known_CAS | "✓ Auto"         | static text
     #
     # The Accept column is rendered narrow (≈50 px).
     # Shiny input bindings are re-attached after every DataTables redraw so
@@ -816,14 +790,12 @@ server <- function(input, output, session) {
         req(v$fuzzy_to_review)
         df <- as.data.frame(v$fuzzy_to_review)
 
-        # ── Sort: Manual → fuzzy → PubChem → DSSTox exact → Known_CAS ────────
+        # ── Sort: Manual → PubChem → Known_CAS ───────────────────────────────
         df$source_order <- dplyr::case_when(
-            df$source == "Manual"         ~ 1L,
-            df$source == "DSSTox (fuzzy)" ~ 2L,
-            df$source == "PubChem"        ~ 3L,
-            df$source == "DSSTox (exact)" ~ 4L,
-            df$source == "Known_CAS"      ~ 5L,
-            TRUE                          ~ 6L
+            df$source == "Manual"    ~ 1L,
+            df$source == "PubChem"   ~ 2L,
+            df$source == "Known_CAS" ~ 3L,
+            TRUE                     ~ 4L
         )
         df <- df[order(df$source_order, df$distance, na.last = TRUE), ]
 
@@ -837,24 +809,23 @@ server <- function(input, output, session) {
 
         # ── Accept column ─────────────────────────────────────────────────────
         # Known_CAS: show a static "✓ Auto" label (already confirmed, no action).
-        # PubChem / DSSTox exact: checkbox pre-checked.
-        # Manual / DSSTox fuzzy: checkbox unchecked.
+        # PubChem: checkbox pre-checked.
+        # Manual: checkbox unchecked.
         accept_col <- sapply(seq_len(nrow(df)), function(i) {
             src <- df$source[i]
             if (src == "Known_CAS") {
                 "<span style='color:#2a7a2a; font-weight:bold;'>\u2713 Auto</span>"
             } else {
-                pre <- src %in% c("PubChem", "DSSTox (exact)")
+                pre <- src == "PubChem"
                 as.character(checkboxInput(paste0("fuzzy_cb_", i), label = NULL, value = pre))
             }
         })
 
         # ── CASRN column ──────────────────────────────────────────────────────
-        # Manual and DSSTox fuzzy: editable textInput (fuzzy pre-filled).
-        # All others: static text.
+        # Manual: editable textInput. All others: static text.
         casrn_col <- sapply(seq_len(nrow(df)), function(i) {
             src <- df$source[i]
-            if (src %in% c("Manual", "DSSTox (fuzzy)")) {
+            if (src == "Manual") {
                 val <- if (is.na(df$CASRN[i])) "" else df$CASRN[i]
                 as.character(
                     textInput(paste0("casrn_input_", i), label = NULL,
@@ -902,12 +873,10 @@ server <- function(input, output, session) {
         # indices match the rows the user sees in the table.
         df <- as.data.frame(v$fuzzy_to_review)
         df$source_order <- dplyr::case_when(
-            df$source == "Manual"         ~ 1L,
-            df$source == "DSSTox (fuzzy)" ~ 2L,
-            df$source == "PubChem"        ~ 3L,
-            df$source == "DSSTox (exact)" ~ 4L,
-            df$source == "Known_CAS"      ~ 5L,
-            TRUE                          ~ 6L)
+            df$source == "Manual"    ~ 1L,
+            df$source == "PubChem"   ~ 2L,
+            df$source == "Known_CAS" ~ 3L,
+            TRUE                     ~ 4L)
         df <- df[order(df$source_order,
                        ifelse(is.na(df$distance), Inf, df$distance)), ]
 
@@ -922,7 +891,7 @@ server <- function(input, output, session) {
 
             checked <- isTRUE(input[[paste0("fuzzy_cb_", i)]])
 
-            if (src %in% c("Manual", "DSSTox (fuzzy)")) {
+            if (src == "Manual") {
                 # CASRN comes from the editable text input.
                 raw_val  <- input[[paste0("casrn_input_", i)]]
                 casrn_val <- trimws(if (is.null(raw_val)) "" else raw_val)
@@ -935,7 +904,7 @@ server <- function(input, output, session) {
                     unresolved <- c(unresolved, df$source_name[i])
                 }
             } else {
-                # PubChem / DSSTox exact: CASRN is pre-filled in the data.
+                # PubChem: CASRN is pre-filled in the data.
                 casrn_val <- if (is.na(df$CASRN[i])) "" else df$CASRN[i]
                 if (checked && nchar(casrn_val) > 0) {
                     confirmed <- rbindlist(list(confirmed,
@@ -968,9 +937,9 @@ server <- function(input, output, session) {
 
         v$fuzzy_to_review <- NULL  # clear table so it disappears from the UI
 
-        # If unresolved compounds remain, navigate to the Manual Entry tab
+        # If unresolved compounds remain, navigate to CASRN Matching (manual entry is there)
         if (!is.null(v$manual_to_fill) && nrow(v$manual_to_fill) > 0)
-            updateTabsetPanel(session, "main_tabs", selected = "Manual Entry")
+            updateTabsetPanel(session, "main_tabs", selected = "CASRN Matching")
     })
 
     # =========================================================================
@@ -1011,10 +980,10 @@ server <- function(input, output, session) {
         req(nrow(v$final_search_results) > 0)
         v$summary_log <- c(v$summary_log, "Starting toxicity calculations...")
 
+        withProgress(message = "Calculating toxicity", value = 0, {
         tryCatch({
             # ── Build the matched compound lookup table ───────────────────────
-            # Remove hyphens from CASRNs for consistent matching with the
-            # ECOTOX dataset (which stores CAS numbers without hyphens).
+            setProgress(0.05, detail = "Building compound lookup table...")
             p_final <- as.data.table(v$final_search_results) %>%
                 na.omit() %>%
                 distinct(PREFERRED_NAME, .keep_all = TRUE) %>%
@@ -1024,19 +993,15 @@ server <- function(input, output, session) {
             cas_search_list <- as.vector(p_final$cas_number)
 
             # ── Subset ECOTOX to matched compounds ───────────────────────────
+            setProgress(0.10, detail = "Filtering ECOTOX data...")
             endpoint_data <- final_ecotox_data %>%
                 mutate(cas_number = as.character(cas_number)) %>%
                 filter(cas_number %in% cas_search_list)
 
-            # ── Per-group TU / PTI calculation (identical for all three groups)
-            # Steps (illustrated for algae; crustacean and fish are analogous):
-            #   a. Filter endpoint_data to the group.
-            #   b. Join compound names and compute median_conc per compound.
-            #   c. Join user concentrations, divide each station column by
-            #      median_conc → TU per compound per station.
-            #   d. Pivot to (Sample × Compound) and sum TUs × 100 → PTI.
+            # ── Per-group TU / PTI calculation ───────────────────────────────
 
             # Algae ────────────────────────────────────────────────────────────
+            setProgress(0.25, detail = "Algae: computing TUs...")
             endpoint_data_algae <- endpoint_data %>%
                 filter(ecotox_group == "algae") %>%
                 left_join(p_final, by = "cas_number", relationship = "many-to-many") %>%
@@ -1052,6 +1017,7 @@ server <- function(input, output, session) {
                 mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
 
             # Crustacean ───────────────────────────────────────────────────────
+            setProgress(0.45, detail = "Crustacean: computing TUs...")
             endpoint_data_crustacean <- endpoint_data %>%
                 filter(ecotox_group == "crustacean") %>%
                 left_join(p_final, by = "cas_number", relationship = "many-to-many") %>%
@@ -1067,6 +1033,7 @@ server <- function(input, output, session) {
                 mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
 
             # Fish ─────────────────────────────────────────────────────────────
+            setProgress(0.65, detail = "Fish: computing TUs...")
             endpoint_data_fish <- endpoint_data %>%
                 filter(ecotox_group == "fish") %>%
                 left_join(p_final, by = "cas_number", relationship = "many-to-many") %>%
@@ -1082,11 +1049,10 @@ server <- function(input, output, session) {
                 mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
 
             # ── Rename RQtg for display and reorder columns ──────────────────
-            # "Risk assessment" is used as the column header in tables and the
-            # Excel export; RQtg is retained internally for plotting functions.
+            setProgress(0.82, detail = "Formatting results...")
             format_tox_output <- function(df) {
-                df %>% rename("Risk assessment" = RQtg) %>%
-                    select(Sample, `Risk assessment`, everything())
+                df %>% rename("PTI" = RQtg) %>%
+                    select(Sample, PTI, everything())
             }
 
             v$tox_results <- list(
@@ -1096,6 +1062,7 @@ server <- function(input, output, session) {
                 "Fish toxicity"       = format_tox_output(tox_cal_fish)
             )
 
+            setProgress(0.92, detail = "Building plots...")
             v$plots <- list(
                 algae_samples         = make_sample_risk_plot(tox_cal_algae,      "Algae"),
                 crustacean_samples    = make_sample_risk_plot(tox_cal_crustacean, "Crustacean"),
@@ -1105,39 +1072,54 @@ server <- function(input, output, session) {
                 fish_pollutants       = make_pollutant_plot(tox_cal_fish,         "Fish")
             )
 
+            setProgress(1.0, detail = "Done.")
             v$summary_log <- c(v$summary_log, "Toxicity calculations complete. See tabs for results.")
             updateTabsetPanel(session, "main_tabs", selected = "Toxicity Plots")
 
         }, error = function(e) {
             v$summary_log <- c(v$summary_log, "An error occurred during toxicity calculation:", e$message)
         })
+        }) # end withProgress
     })
 
     # ── Toxicity table outputs ────────────────────────────────────────────────
-    sci_render <- JS(
+    # Format: 3 significant figures plain decimal (no scientific notation)
+    sig3_render <- JS(
         "function(data, type) {",
         "  if (type === 'display' && data !== null && data !== '' &&",
         "      !isNaN(parseFloat(data)) && isFinite(data)) {",
-        "    return parseFloat(data).toExponential(4);",
+        "    var v = parseFloat(data);",
+        "    return v.toPrecision(3);",
         "  }",
         "  return data;",
         "}"
     )
     tox_dt_opts <- list(
         pageLength = 25,
-        columnDefs = list(list(targets = "_all", render = sci_render))
+        columnDefs = list(list(targets = "_all", render = sig3_render))
     )
+    pti_style <- function(dt) {
+        dt %>% formatStyle(
+            "PTI",
+            backgroundColor = styleInterval(c(0.1, 1.0),
+                c("transparent", "#FFE0B2", "#FFCDD2")),
+            color = styleInterval(c(0.1, 1.0),
+                c("inherit", "#E65100", "#B71C1C")),
+            fontWeight = styleInterval(c(0.1, 1.0),
+                c("normal", "bold", "bold"))
+        )
+    }
     output$tox_table_algae      <- renderDT({
         req(v$tox_results)
-        datatable(v$tox_results[["Algae toxicity"]],      rownames = FALSE, options = tox_dt_opts)
+        datatable(v$tox_results[["Algae toxicity"]],      rownames = FALSE, options = tox_dt_opts) %>% pti_style()
     })
     output$tox_table_crustacean <- renderDT({
         req(v$tox_results)
-        datatable(v$tox_results[["Crustacean toxicity"]], rownames = FALSE, options = tox_dt_opts)
+        datatable(v$tox_results[["Crustacean toxicity"]], rownames = FALSE, options = tox_dt_opts) %>% pti_style()
     })
     output$tox_table_fish       <- renderDT({
         req(v$tox_results)
-        datatable(v$tox_results[["Fish toxicity"]],       rownames = FALSE, options = tox_dt_opts)
+        datatable(v$tox_results[["Fish toxicity"]],       rownames = FALSE, options = tox_dt_opts) %>% pti_style()
     })
 
     # ── Plot outputs ──────────────────────────────────────────────────────────
@@ -1231,15 +1213,20 @@ server <- function(input, output, session) {
             writeData(wb, "Toxicity Coverage", coverage_display)
 
             # Conditional formatting: green = ECOTOX data present, red = absent
+            # Batched per column (two addStyle calls per column instead of one per cell)
             green_style <- createStyle(fgFill = "#C6EFCE", halign = "CENTER", fontColour = "#276221")
             red_style   <- createStyle(fgFill = "#FFC7CE", halign = "CENTER", fontColour = "#9C0006")
             for (col_idx in 2:4) {
-                col_name <- names(coverage)[col_idx]
-                for (row_idx in seq_len(nrow(coverage))) {
-                    addStyle(wb, "Toxicity Coverage",
-                             if (isTRUE(coverage[[col_name]][row_idx])) green_style else red_style,
-                             rows = row_idx + 1, cols = col_idx)
-                }
+                col_name   <- names(coverage)[col_idx]
+                vals       <- coverage[[col_name]]
+                green_rows <- which(vals == TRUE)  + 1L   # +1 for header row
+                red_rows   <- which(vals != TRUE)  + 1L
+                if (length(green_rows) > 0)
+                    addStyle(wb, "Toxicity Coverage", green_style,
+                             rows = green_rows, cols = col_idx, stack = FALSE)
+                if (length(red_rows) > 0)
+                    addStyle(wb, "Toxicity Coverage", red_style,
+                             rows = red_rows,  cols = col_idx, stack = FALSE)
             }
             saveWorkbook(wb, file, overwrite = TRUE)
         }

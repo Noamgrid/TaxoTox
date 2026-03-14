@@ -1,15 +1,35 @@
-#title: "taxotox_install"
-#author: "Yair&Noam"
-#date: "2025-03-11"
-#output: html_document
+setwd("c:/Users/Yair/Documents/yair/research/estuary_rehabilitation/yairs_stuff/Students/Noam/TaxoTox/Code")
 
-
-
-#installation - different script?
+# =============================================================================
+# taxotox_install.R
+# -----------------------------------------------------------------------------
+# Purpose : Build the toxicity reference dataset used by the TaxoTox Shiny app.
+#           Queries the local ECOTOX SQLite cache, filters to aquatic organisms
+#           (fish / algae / crustacean) and acute lethal/effective-concentration
+#           endpoints (LC50 / EC50), normalises all concentrations to ng/L, and
+#           writes the result to Data/final_ecotox_data.fst.
+#
+# Output  : ../Data/final_ecotox_data.fst
+#           One row per test result; key columns used by app.R:
+#             cas_number   – CAS Registry Number (chemical identity)
+#             ecotox_group – taxonomic group: "fish" | "algae" | "crustacean"
+#             conc_ng_L    – concentration converted to ng/L
+#           app.R takes median(conc_ng_L) per (cas_number, ecotox_group) as the
+#           species-sensitivity denominator when computing Toxic Units (TU).
+#
+# Prerequisites:
+#   1. Run update_ecotox.R once to download ECOTOX data from the EPA website.
+#   2. The SQLite path on line 42 must match the ECOTOXr cache location.
+#      Check with: ECOTOXr::get_ecotox_sqlite_file()
+#
+# Frequency : Re-run whenever the ECOTOX database is updated (≈ quarterly).
+#
+# Authors  : Yair Suari & Noam Gridish, 2025
+# =============================================================================
 
 #######################################################################
 
-#Libraries
+# Libraries
 
 library(openxlsx)
 library(tidyr)
@@ -28,17 +48,16 @@ library(readxl)
 library(stringr)
 library(RSQLite)
 library(data.table)
-library(stringdist)
 library(fst)
 library(tcltk)
 library(ECOTOXr)
 
 #######################################################################
+# Step 1: Connect to the local ECOTOX SQLite database and extract data.
+# The database is built by update_ecotox.R (ECOTOXr::download_ecotox_data()).
+# To find the correct path on your machine:  ECOTOXr::get_ecotox_sqlite_file()
 
-#Filtering and treating ECOTOX data for aquatic organisms, relevant units and saving the filtered data as csv for quicker search - RUN ONCE IN 3 MONTHS
-
-#R TO SQL
-conn <- dbConnect(RSQLite::SQLite(), "C:/Users/owner/AppData/Local/ECOTOXr/ECOTOXr/Cache/ecotox_ascii_03_13_2025.sqlite")
+conn <- dbConnect(RSQLite::SQLite(), "C:/Users/Yair/AppData/Local/ECOTOXr/ECOTOXr/Cache/ecotox_ascii_03_13_2025.sqlite")
 
 #combining all relevant columns from result, test and chemical df
 
@@ -159,110 +178,79 @@ WHERE LOWER(er.ecotox_group) LIKE '%fish%'
 ")
 
 
-filterd_ecotox_data <-dbGetQuery(conn, mysearch) #creats a table of all endpoints for fish, algae and crustacean
+filterd_ecotox_data <- dbGetQuery(conn, mysearch)
 
-relevent_units <- c("ng/L", "ug/L", "mg/L", "g/L")  
+# Step 2: Normalise unit strings to the four supported SI forms.
+# "AI" prefix (Active Ingredient) is stripped — we treat lab concentrations as
+# active ingredient concentrations regardless of formulation.
+# Unit aliases used in ECOTOX:
+#   ppt  → ng/L  (parts-per-trillion)
+#   ppb  → µg/L  (parts-per-billion)
+#   ppm  → mg/L  (parts-per-million)
+#   0/00 → g/L   (per-mille, i.e. g/kg ≈ g/L in dilute aqueous solutions)
+#   dm³  → L     (cubic decimetre = litre)
+# Rows with any other unit (e.g. nmol/L, % body weight) are dropped.
 
-filterd_ecotox_data_conc_unit <- filterd_ecotox_data %>% #filtering for relevant concentration units (dissolved)
+relevent_units <- c("ng/L", "ug/L", "mg/L", "g/L")
+
+filterd_ecotox_data_conc_unit <- filterd_ecotox_data %>%
   mutate(
-    conc1_unit = str_remove(conc1_unit, c("^AI\\s*")), # we assume that the lab measure for active ingredient and not product
-    conc1_unit = str_replace_all(conc1_unit, "\\bdm3\\b", "L"), #decimeter^3, equivalent to L
-    conc1_unit = str_replace_all(conc1_unit, "ppt", "ng/L"), 
-    conc1_unit = str_replace_all(conc1_unit, "ppm", "mg/L"),
-    conc1_unit = str_replace_all(conc1_unit, "ppb", "ug/L"),
+    conc1_unit = str_remove(conc1_unit, "^AI\\s*"),
+    conc1_unit = str_replace_all(conc1_unit, "\\bdm3\\b", "L"),
+    conc1_unit = str_replace_all(conc1_unit, "ppt",  "ng/L"),
+    conc1_unit = str_replace_all(conc1_unit, "ppm",  "mg/L"),
+    conc1_unit = str_replace_all(conc1_unit, "ppb",  "ug/L"),
     conc1_unit = str_replace_all(conc1_unit, "0/00", "g/L")
   ) %>%
   filter(conc1_unit %in% relevent_units)
 
+# Step 3: Build a unit-to-ng/L conversion look-up table.
+# factor_to_ng_L is multiplied by min_concentration (in the original unit)
+# to produce conc_ng_L — the common scale used throughout app.R.
 conversion_df <- tibble(
-  conc1_unit = relevent_units,
+  conc1_unit     = relevent_units,
   factor_to_ng_L = c(1, 1e3, 1e6, 1e9)
 )
 
-
-endpoint_count <- filterd_ecotox_data_conc_unit %>% 
-  group_by(endpoint) %>% 
+# Diagnostic: count rows per endpoint label (informational only, not used downstream).
+endpoint_count <- filterd_ecotox_data_conc_unit %>%
+  group_by(endpoint) %>%
   count(endpoint)
 
+# Step 4: Apply conversion, back-transform log-reported values, filter endpoints.
 final_ecotox_data <- filterd_ecotox_data_conc_unit %>%
   left_join(conversion_df, by = "conc1_unit") %>%
   mutate(min_concentration = as.numeric(min_concentration)) %>%
-  # Back-transform (log)-reported values BEFORE unit conversion.
-  # "(log)EC50" / "(log)LC50" mean the concentration is stored as log10(conc).
+  # Some ECOTOX entries report log10(concentration) under labels "(log)LC50" /
+  # "(log)EC50". Back-transform to the linear scale before unit conversion.
   mutate(min_concentration = if_else(
     str_detect(endpoint, "^\\(log\\)"),
     10 ^ min_concentration,
     min_concentration
   )) %>%
+  # Compute final concentration in ng/L.
   mutate(conc_ng_L = min_concentration * factor_to_ng_L) %>%
-  # Normalise endpoint labels:
-  #   (log)EC50 -> EC50,  (log)LC50 -> LC50,  LC50* -> LC50
+  # Strip label decorators so endpoint values become canonical "EC50" / "LC50".
+  #   "(log)EC50" → "EC50",  "LC50*" → "LC50",  "LC50/" → "LC50"
   mutate(endpoint = str_remove(endpoint, "^\\(log\\)"),
          endpoint = str_replace_all(endpoint, "[*/]", "")) %>%
-  # Fix C: keep only true acute benchmarks
+  # Keep only acute lethal / effective-concentration endpoints.
+  # These represent the most widely reported, standardised benchmarks in ECOTOX
+  # and are the denominators in the Toxic Unit (TU) framework.
   filter(endpoint %in% c("LC50", "EC50")) %>%
   mutate(effect = str_replace_all(effect, "[~/]", ""))
 
+# Step 5: Summary table (median per chemical × taxonomic group).
+# Not used by app.R directly — kept for diagnostics.
+taxotox_data <- final_ecotox_data %>%
+  group_by(cas_number, ecotox_group) %>%
+  summarize(median_min_conc  = median(min_concentration, na.rm = TRUE),
+            observation_count = n())
 
-taxotox_data <- final_ecotox_data %>% 
-  group_by(cas_number, ecotox_group) %>% 
-  summarize(median_min_conc = median(min_concentration, na.rm = TRUE),
-            observation_count = n()) 
-
-
-
+# Step 6: Write to FST for fast loading in app.R.
+# app.R reads this file at startup and computes median(conc_ng_L) per
+# (cas_number, ecotox_group) as the species-sensitivity denominator.
 write_fst(final_ecotox_data, "../Data/final_ecotox_data.fst", compress = 50)
-
-#filter dsstox data to casrn that appear in ecotox
-
-cas_ecotox <- final_ecotox_data$cas_number
-cas_ecotox <- as.character(cas_ecotox)
-
-#######################################################################
-
-#combining the DSSTox df into one and filtering the relevent CAS according to ecotox- also include in the updates
-
-# Set the folder path containing your Excel files
-folder_path <- "../../Data/DSSTox_Feb_2024" #should be on the desktop of the virtual computer
-
-
-# Get all Excel file names in the folder
-excel_files <- list.files(path = folder_path, 
-                          pattern = "\\.(xlsx|xls)$", 
-                          full.names = TRUE)
-
-# Read all Excel files and store them in a list
-all_data <- map(excel_files, ~{
-  file_name <- basename(.x)
-  data <- read_excel(.x)
-  # Add a column to identify the source file if needed  - remove?
-  # data$source_file <- file_name - remove?
-  return(data)
-})
-
-# Name each dataframe in the list according to the file name
-names(all_data) <- basename(excel_files)
-
-# combine all data into a single dataframe and add a CAS column
-combined_df <- bind_rows(all_data) %>% 
-  select(-c(1,4,6:length(.))) 
-
-#add IUPAC names to the name column
-DSSTox <- rbind(
-  combined_df[, c("PREFERRED_NAME", "CASRN")],              
-  data.frame(PREFERRED_NAME = combined_df$IUPAC_NAME,       
-             CASRN = combined_df$CASRN)) %>% 
-  mutate("cas" = gsub("-", "", CASRN)) 
-
-cas_dsstox <- DSSTox$cas
-
-common <- intersect(cas_dsstox, cas_ecotox)
-
-DSSTox <- DSSTox %>% 
-  filter(cas %in% common)
-
-write.fst(DSSTox, "../Data/DSSTox.fst") #save filtered and updated fst file with names and CAS of pollutants from DSSTox database
-
 
 #######################################################################
 
