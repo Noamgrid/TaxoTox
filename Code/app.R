@@ -677,6 +677,29 @@ server <- function(input, output, session) {
             v$summary_log <- c(v$summary_log,
                                paste("Loaded", length(v$p_vector), "compounds from file."))
 
+            # ── Unit plausibility check ──────────────────────────────────────
+            numeric_vals <- unlist(v$user_data[, -1, with = FALSE])
+            numeric_vals <- suppressWarnings(as.numeric(numeric_vals))
+            numeric_vals <- numeric_vals[!is.na(numeric_vals) & is.finite(numeric_vals)]
+            if (length(numeric_vals) > 0) {
+                med_val <- median(numeric_vals)
+                if (med_val > 1e6) {
+                    showNotification(
+                        paste0("Warning: median concentration is ", signif(med_val, 3),
+                               " ng/L \u2014 this is unusually high. ",
+                               "Check that units are ng/L, not \u00b5g/L or mg/L."),
+                        type = "warning", duration = 15
+                    )
+                } else if (med_val > 0 && med_val < 0.001) {
+                    showNotification(
+                        paste0("Warning: median concentration is ", signif(med_val, 3),
+                               " ng/L \u2014 this is unusually low. ",
+                               "Check that units are ng/L, not pg/L."),
+                        type = "warning", duration = 15
+                    )
+                }
+            }
+
             # ── Layer 1: Known_CAS exact ─────────────────────────────────────
             setProgress(0.20, detail = paste("Layer 1: Known_CAS lookup (",
                                              length(v$p_vector), "compounds)..."))
@@ -691,27 +714,28 @@ server <- function(input, output, session) {
                                paste("Layer 1 (Known_CAS):", length(p_vector_found),
                                      "exact matches;", length(unfound), "remaining."))
 
-            # ── Orientation check ────────────────────────────────────────────
-            # If >75 % of compound names were not found in Known_CAS the first
-            # column is likely station names rather than compound names — the
-            # user may have the wrong layout selected.
+            # ── Orientation / structure check ────────────────────────────────
+            # If >50 % of compound names were not found in Known_CAS, ask the
+            # user to confirm the file is structured correctly before proceeding.
             pct_unfound <- length(unfound) / max(length(v$p_vector), 1)
-            if (pct_unfound > 0.75) {
+            if (pct_unfound > 0.50) {
                 v$pending_unfound <- unfound
                 pct_label <- paste0(round(pct_unfound * 100), "%")
                 showModal(modalDialog(
-                    title = "\u26a0\ufe0f Possible orientation mismatch",
+                    title = "\u26a0\ufe0f Low compound name recognition",
                     p(strong(paste0(length(unfound), " of ", length(v$p_vector),
-                                   " (", pct_label, ") compound names were not recognised.")),
-                      " This often means the file is in the opposite layout to the one selected:"),
+                                   " (", pct_label, ") compound names were not recognised",
+                                   " in the internal database."))),
+                    p("Please confirm the file is structured correctly:"),
                     tags$ul(
-                        tags$li("If your ", strong("first column contains station names"),
-                                " (Layout B), select ",
-                                strong("\u201cStation names in first column\u201d"), " in the sidebar."),
-                        tags$li("If your ", strong("first column contains compound names"),
-                                " (Layout A), keep the current selection.")
+                        tags$li("The ", strong("first column"), " should contain ",
+                                strong("compound / pollutant names")),
+                        tags$li("Remaining columns should each be a ",
+                                strong("sample or station")),
+                        tags$li("All concentration values should be in ", strong("ng/L"))
                     ),
-                    p("Would you like to ", strong("transpose the table and retry"), "?"),
+                    p("If the layout is transposed (stations in first column), click ",
+                      strong("'Transpose & Retry'")),
                     footer = tagList(
                         actionButton("orientation_transpose_btn",
                                      "Transpose & Retry", class = "btn-warning"),
@@ -1192,6 +1216,30 @@ server <- function(input, output, session) {
 
             # ── Build workbook ────────────────────────────────────────────────
             wb <- createWorkbook()
+
+            # Legend sheet (first tab) — formulas and risk thresholds
+            addWorksheet(wb, "Legend")
+            legend_df <- data.frame(
+                Item = c(
+                    "Toxic Unit (TU)",
+                    "Pollution Toxicity Index (PTI)",
+                    "",
+                    "PTI \u2265 1.0",
+                    "PTI 0.1 \u2013 1.0",
+                    "PTI < 0.1"
+                ),
+                Description = c(
+                    "TU_ij = C_ij (ng/L) / median LC50_i (ng/L)   [compound i, sample j, per taxonomic group]",
+                    "PTI_j = sum of all TU_ij   [sum over all detected compounds in sample j]",
+                    "",
+                    "Acute risk \u2014 mixture may cause lethal or immobilisation effects on sensitive species",
+                    "Chronic risk \u2014 sub-lethal effects on sensitive species possible",
+                    "Low risk \u2014 mixture unlikely to cause measurable toxicity"
+                ),
+                stringsAsFactors = FALSE
+            )
+            writeData(wb, "Legend", legend_df)
+
             for (sname in names(v$tox_results)) {
                 addWorksheet(wb, sname)
                 df <- v$tox_results[[sname]]
