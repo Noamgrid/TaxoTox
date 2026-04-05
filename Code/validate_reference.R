@@ -1,0 +1,1040 @@
+# Set working directory to this script's location.
+# Works in: RStudio (interactive/Source), VSCode source(), Rscript --file=
+.script_dir <- tryCatch(
+  dirname(rstudioapi::getActiveDocumentContext()$path),          # RStudio
+  error = function(e) tryCatch(
+    dirname(normalizePath(sys.frames()[[1]]$ofile)),             # source() in VSCode/R terminal
+    error = function(e) {
+      f <- sub("--file=", "", commandArgs(FALSE)[grep("--file=", commandArgs(FALSE))])
+      if (length(f) && nzchar(f)) dirname(normalizePath(f))     # Rscript --file=
+      else getwd()
+    }
+  )
+)
+setwd(.script_dir)
+
+# =============================================================================
+# validate_reference.R
+# -----------------------------------------------------------------------------
+# Purpose : Diagnostic validation of the taxotox_reference.fst table.
+#           Produces diagnostic plots and tables to verify the full install pipeline.
+#
+# Inputs  :
+#   ../Data/final_ecotox_data.fst      – raw test results (LC50 + EC50 rows)
+#   ../Data/taxotox_reference.fst      – pre-aggregated denominator table
+#                                        (if not yet produced, built inline)
+#   ../Data/hc5_scaling_factors.csv    – k per ecotox_group from step I-1b
+#
+# Output  : ../Docs/validate_reference.html   (self-contained, no server needed)
+#
+# Plots   :
+#   1. HC5 (SSD) vs median LC50        — confirms proportionality; validates k
+#   2. Scaled HC5 vs SSD HC5           — agreement plot; quantifies scaling error
+#   3. LC50 vs EC50 medians            — endpoint interchangeability check
+#   4. Distribution of k               — spread of HC5/median ratio per group
+#   5. OPERA predicted vs ECOTOX median — CompTox gap-fill calibration (if I-2 ran)
+#   6. Coverage by lc50_source          — how many compounds gained a denominator
+#   7. Mode of Action group coverage    — compounds per group per ecotox_group (if I-3 ran)
+#   8. Benchmark framework coverage     — compounds per national benchmark (if I-11 ran)
+#
+# Authors : Yair Suari & Noam Gridish, 2025
+# =============================================================================
+
+library(dplyr)
+library(tidyr)
+library(stringr)
+library(fst)
+library(htmltools)
+library(DT)
+library(plotly)
+
+# ── 1. Load data ──────────────────────────────────────────────────────────────
+
+message("Loading final_ecotox_data.fst...")
+ecotox <- read.fst("../Data/final_ecotox_data.fst", as.data.table = FALSE) %>%
+  mutate(cas_number = as.character(cas_number))
+
+message("  Rows: ", nrow(ecotox),
+        "  |  Endpoints: ",
+        paste(names(table(ecotox$endpoint)), collapse = ", "))
+
+# taxotox_reference.fst is written at step I-4.
+# If it exists use it; otherwise reconstruct from final_ecotox_data + scaling factors
+# so this script can be run immediately after steps I-1a/I-1b.
+ref_path    <- "../Data/taxotox_reference.fst"
+sf_path     <- "../Data/hc5_scaling_factors.csv"
+
+if (file.exists(ref_path)) {
+  message("Loading taxotox_reference.fst...")
+  ref <- read.fst(ref_path, as.data.table = FALSE) %>%
+    mutate(cas_number = as.character(cas_number))
+} else {
+  message("taxotox_reference.fst not found — reconstructing from final_ecotox_data...")
+
+  library(ssdtools)
+
+  fit_hc5_ssd <- function(values) {
+    tryCatch({
+      df <- data.frame(Conc = values[values > 0 & is.finite(values)])
+      if (nrow(df) < 5) return(NA_real_)
+      fit <- ssd_fit_dists(df, dists = "lnorm")
+      hc  <- ssd_hc(fit, proportion = 0.05, ci = FALSE)
+      as.numeric(hc$est[[1]])
+    }, error = function(e) NA_real_)
+  }
+
+  ref <- ecotox %>%
+    group_by(cas_number, ecotox_group) %>%
+    summarise(
+      chemical_name    = first(chemical_name),
+      n_ecotox         = n(),
+      median_lc50_ng_L = median(conc_ng_L, na.rm = TRUE),
+      .groups = "drop"
+    )
+
+  eligible <- ecotox %>%
+    filter(!is.na(conc_ng_L), conc_ng_L > 0) %>%
+    group_by(cas_number, ecotox_group) %>%
+    filter(n() >= 5) %>%
+    ungroup()
+
+  hc5_ssd <- eligible %>%
+    group_by(cas_number, ecotox_group) %>%
+    summarise(hc5_ssd_ng_L = fit_hc5_ssd(conc_ng_L), .groups = "drop")
+
+  ref <- ref %>%
+    left_join(hc5_ssd, by = c("cas_number", "ecotox_group")) %>%
+    mutate(hc5_model_ng_L = NA_real_,
+           hc5_method     = if_else(!is.na(hc5_ssd_ng_L), "SSD", NA_character_))
+
+  if (file.exists(sf_path)) {
+    scaling_factors <- read.csv(sf_path)
+    ref <- ref %>%
+      left_join(scaling_factors, by = "ecotox_group") %>%
+      mutate(
+        hc5_model_ng_L = if_else(
+          !is.na(median_lc50_ng_L) & median_lc50_ng_L > 0,
+          median_lc50_ng_L * scaling_factor,
+          NA_real_
+        ),
+        hc5_method = case_when(
+          !is.na(hc5_ssd_ng_L) & !is.na(hc5_model_ng_L) ~ "Both",
+          !is.na(hc5_ssd_ng_L)                            ~ "SSD",
+          !is.na(hc5_model_ng_L)                          ~ "Scaled",
+          TRUE                                             ~ NA_character_
+        )
+      ) %>%
+      select(-scaling_factor, -n_calibration)
+  }
+}
+
+message("Reference rows: ", nrow(ref))
+
+# Load scaling factors (for annotation lines on Plot 1)
+scaling_factors <- if (file.exists(sf_path)) read.csv(sf_path) else NULL
+
+# ── 2. Group colours (consistent across all plots) ────────────────────────────
+
+group_colours <- c(fish = "#1f78b4", algae = "#33a02c", crustacean = "#e31a1c")
+
+# ── 3. Plot 1 — HC5 (SSD) vs Median LC50 (log-log) ───────────────────────────
+# Expected: tight log-linear relationship (slope ≈ 1 on log scale).
+# Vertical offset = log10(k), i.e. the scaling factor.
+# Points sized by n_ecotox; lines = OLS per group.
+
+p1_df <- ref %>%
+  filter(!is.na(hc5_ssd_ng_L), !is.na(median_lc50_ng_L),
+         median_lc50_ng_L > 0, hc5_ssd_ng_L > 0)
+
+ax_range1 <- range(log10(c(p1_df$median_lc50_ng_L, p1_df$hc5_ssd_ng_L)),
+                   na.rm = TRUE)
+ax_lim1   <- 10^(ax_range1 + c(-0.5, 0.5))
+
+# Build one trace per group for the scatter
+fig1 <- plot_ly()
+
+for (grp in names(group_colours)) {
+  d <- filter(p1_df, ecotox_group == grp)
+  if (nrow(d) == 0) next
+
+  fig1 <- fig1 %>%
+    add_trace(
+      data = d,
+      x = ~median_lc50_ng_L, y = ~hc5_ssd_ng_L,
+      type = "scatter", mode = "markers",
+      name = grp,
+      text = ~paste0("<b>", chemical_name, "</b><br>CAS: ", cas_number,
+                     "<br>Group: ", ecotox_group,
+                     "<br>n_ecotox: ", n_ecotox,
+                     "<br>Median LC50: ", signif(median_lc50_ng_L, 3), " ng/L",
+                     "<br>HC5 (SSD): ",  signif(hc5_ssd_ng_L, 3),    " ng/L"),
+      hoverinfo = "text",
+      marker = list(
+        size   = ~pmin(6 + sqrt(n_ecotox), 20),
+        color  = group_colours[grp],
+        opacity = 0.7
+      )
+    )
+
+  # OLS line per group (on log scale)
+  if (nrow(d) >= 3) {
+    lm_fit <- lm(log10(hc5_ssd_ng_L) ~ log10(median_lc50_ng_L), data = d)
+    x_seq  <- 10^seq(ax_range1[1] - 0.5, ax_range1[2] + 0.5, length.out = 80)
+    y_pred <- 10^predict(lm_fit, newdata = data.frame(median_lc50_ng_L = x_seq))
+
+    fig1 <- fig1 %>%
+      add_trace(
+        x = x_seq, y = y_pred,
+        type = "scatter", mode = "lines",
+        name = paste(grp, "OLS"),
+        line = list(color = group_colours[grp], width = 1.5, dash = "dot"),
+        showlegend = TRUE, inherit = FALSE
+      )
+  }
+}
+
+# 1:1 reference line
+fig1 <- fig1 %>%
+  add_trace(
+    x = ax_lim1, y = ax_lim1,
+    type = "scatter", mode = "lines",
+    name = "1:1 line",
+    line = list(color = "black", dash = "dash", width = 1),
+    inherit = FALSE, showlegend = TRUE
+  )
+
+# k-offset lines (y = x × k per group)
+if (!is.null(scaling_factors)) {
+  for (i in seq_len(nrow(scaling_factors))) {
+    grp <- scaling_factors$ecotox_group[i]
+    k   <- scaling_factors$scaling_factor[i]
+    if (!grp %in% names(group_colours)) next
+
+    fig1 <- fig1 %>%
+      add_trace(
+        x = ax_lim1, y = ax_lim1 * k,
+        type = "scatter", mode = "lines",
+        name = paste0(grp, " k=", round(k, 3)),
+        line = list(color = group_colours[grp], dash = "solid", width = 1),
+        inherit = FALSE, showlegend = TRUE
+      )
+  }
+}
+
+fig1 <- fig1 %>%
+  layout(
+    title  = "Plot 1 — HC5 (SSD-fitted) vs Median LC50 [log–log]",
+    xaxis  = list(title = "Median LC50 (ng/L)", type = "log"),
+    yaxis  = list(title = "HC5 SSD (ng/L)",     type = "log"),
+    legend = list(title = list(text = "Group / line")),
+    annotations = list(list(
+      text = "Dashed lines = OLS per group  |  Solid coloured = y = x\u00d7k  |  Black dashed = 1:1",
+      xref = "paper", yref = "paper", x = 0, y = -0.12,
+      showarrow = FALSE, font = list(size = 11, color = "grey40")
+    ))
+  )
+
+# ── 4. Plot 2 — SSD HC5 vs Scaled HC5 (agreement plot) ───────────────────────
+# x: hc5_model_ng_L (scaling factor estimate), y: hc5_ssd_ng_L (full SSD)
+# Diagonal = perfect agreement.  Spread reveals calibration uncertainty.
+
+p2_df <- ref %>%
+  filter(!is.na(hc5_ssd_ng_L), !is.na(hc5_model_ng_L),
+         hc5_ssd_ng_L > 0, hc5_model_ng_L > 0)
+
+ax_range2 <- range(log10(c(p2_df$hc5_model_ng_L, p2_df$hc5_ssd_ng_L)), na.rm = TRUE)
+ax_lim2   <- 10^(ax_range2 + c(-0.3, 0.3))
+
+fig2 <- plot_ly()
+for (grp in names(group_colours)) {
+  d <- filter(p2_df, ecotox_group == grp)
+  if (nrow(d) == 0) next
+  fig2 <- fig2 %>%
+    add_trace(
+      data = d,
+      x = ~hc5_model_ng_L, y = ~hc5_ssd_ng_L,
+      type = "scatter", mode = "markers",
+      name = grp,
+      text = ~paste0("<b>", chemical_name, "</b><br>CAS: ", cas_number,
+                     "<br>HC5 (Scaled): ", signif(hc5_model_ng_L, 3), " ng/L",
+                     "<br>HC5 (SSD): ",    signif(hc5_ssd_ng_L,   3), " ng/L",
+                     "<br>Ratio (SSD/Scaled): ", round(hc5_ssd_ng_L / hc5_model_ng_L, 2)),
+      hoverinfo = "text",
+      marker = list(size = 6, color = group_colours[grp], opacity = 0.7)
+    )
+}
+fig2 <- fig2 %>%
+  add_trace(
+    x = ax_lim2, y = ax_lim2,
+    type = "scatter", mode = "lines",
+    name = "Perfect agreement",
+    line = list(color = "black", dash = "dash", width = 1.2),
+    inherit = FALSE, showlegend = TRUE
+  ) %>%
+  layout(
+    title = "Plot 2 — Scaled HC5 vs SSD-fitted HC5 (agreement)",
+    xaxis = list(title = "HC5 Scaled (median \u00d7 k) [ng/L]", type = "log"),
+    yaxis = list(title = "HC5 SSD-fitted [ng/L]",               type = "log"),
+    legend = list(title = list(text = "Taxonomic group"))
+  )
+
+# ── 5. Plot 3 — LC50 vs EC50 medians per compound × group ────────────────────
+# Computes separate medians for LC50 and EC50 from the raw ecotox file.
+# Compounds with BOTH endpoint types are shown.
+# Expected result: EC50 ≈ LC50 for acute endpoints (minor systematic offset
+# is acceptable; large divergence would question combining the endpoints).
+
+lc50_med <- ecotox %>%
+  filter(endpoint == "LC50", !is.na(conc_ng_L), conc_ng_L > 0) %>%
+  group_by(cas_number, chemical_name, ecotox_group) %>%
+  summarise(median_lc50 = median(conc_ng_L, na.rm = TRUE),
+            n_lc50      = n(),
+            .groups     = "drop")
+
+ec50_med <- ecotox %>%
+  filter(endpoint == "EC50", !is.na(conc_ng_L), conc_ng_L > 0) %>%
+  group_by(cas_number, ecotox_group) %>%
+  summarise(median_ec50 = median(conc_ng_L, na.rm = TRUE),
+            n_ec50      = n(),
+            .groups     = "drop")
+
+p3_df <- inner_join(lc50_med, ec50_med, by = c("cas_number", "ecotox_group")) %>%
+  filter(median_lc50 > 0, median_ec50 > 0)
+
+message("Plot 3: ", nrow(p3_df),
+        " compound×group pairs with both LC50 and EC50 data")
+
+ax_range3 <- range(log10(c(p3_df$median_lc50, p3_df$median_ec50)), na.rm = TRUE)
+ax_lim3   <- 10^(ax_range3 + c(-0.5, 0.5))
+
+fig3 <- plot_ly()
+for (grp in names(group_colours)) {
+  d <- filter(p3_df, ecotox_group == grp)
+  if (nrow(d) == 0) next
+  fig3 <- fig3 %>%
+    add_trace(
+      data = d,
+      x = ~median_lc50, y = ~median_ec50,
+      type = "scatter", mode = "markers",
+      name = grp,
+      text = ~paste0("<b>", chemical_name, "</b><br>CAS: ", cas_number,
+                     "<br>Median LC50: ", signif(median_lc50, 3), " ng/L (n=", n_lc50, ")",
+                     "<br>Median EC50: ", signif(median_ec50, 3), " ng/L (n=", n_ec50, ")",
+                     "<br>EC50/LC50 ratio: ", round(median_ec50 / median_lc50, 2)),
+      hoverinfo = "text",
+      marker = list(size = 6, color = group_colours[grp], opacity = 0.7)
+    )
+}
+
+# Count pairs per group for annotation
+pair_counts <- p3_df %>% count(ecotox_group) %>%
+  mutate(label = paste0(ecotox_group, ": n=", n)) %>%
+  pull(label) %>% paste(collapse = "  |  ")
+
+fig3 <- fig3 %>%
+  add_trace(
+    x = ax_lim3, y = ax_lim3,
+    type = "scatter", mode = "lines",
+    name = "LC50 = EC50",
+    line = list(color = "black", dash = "dash", width = 1.2),
+    inherit = FALSE, showlegend = TRUE
+  ) %>%
+  layout(
+    title = "Plot 3 — Median LC50 vs Median EC50 per compound \u00d7 group",
+    xaxis = list(title = "Median LC50 (ng/L)", type = "log"),
+    yaxis = list(title = "Median EC50 (ng/L)", type = "log"),
+    legend = list(title = list(text = "Taxonomic group")),
+    annotations = list(list(
+      text = pair_counts,
+      xref = "paper", yref = "paper", x = 0, y = -0.12,
+      showarrow = FALSE, font = list(size = 11, color = "grey40")
+    ))
+  )
+
+# ── 6. Plot 4 — Distribution of k (HC5/median LC50 ratio) ────────────────────
+# Histogram of hc5_ssd_ng_L / median_lc50_ng_L, one panel per ecotox_group.
+# Vertical line at group median (= k used in scaling factor).
+
+ratio_df <- ref %>%
+  filter(!is.na(hc5_ssd_ng_L), !is.na(median_lc50_ng_L),
+         median_lc50_ng_L > 0, hc5_ssd_ng_L > 0) %>%
+  mutate(ratio = hc5_ssd_ng_L / median_lc50_ng_L)
+
+fig4 <- plot_ly()
+for (grp in names(group_colours)) {
+  d <- filter(ratio_df, ecotox_group == grp)
+  if (nrow(d) == 0) next
+  k_val <- median(d$ratio, na.rm = TRUE)
+  fig4 <- fig4 %>%
+    add_trace(
+      x = ~ratio, data = d,
+      type = "histogram",
+      name = grp,
+      marker = list(color = group_colours[grp], opacity = 0.65, line = list(width = 0.5)),
+      nbinsx = 40,
+      showlegend = TRUE
+    ) %>%
+    add_segments(
+      x = k_val, xend = k_val, y = 0, yend = 50,
+      type = "scatter", mode = "lines",
+      line = list(color = group_colours[grp], dash = "dash", width = 2),
+      name = paste0(grp, " k=", round(k_val, 3)),
+      inherit = FALSE, showlegend = TRUE
+    )
+}
+fig4 <- fig4 %>%
+  layout(
+    title      = "Plot 4 — Distribution of k = HC5 (SSD) / Median LC50 per group",
+    xaxis      = list(title = "k ratio (HC5 / Median LC50)"),
+    yaxis      = list(title = "Count"),
+    barmode    = "overlay",
+    legend     = list(title = list(text = "Group (dashed = k used)")),
+    annotations = list(list(
+      text = "Wide spread \u2192 higher uncertainty in Scaled HC5 estimates",
+      xref = "paper", yref = "paper", x = 0, y = -0.12,
+      showarrow = FALSE, font = list(size = 11, color = "grey40")
+    ))
+  )
+
+# ── 7. Plot 5 — OPERA predicted vs ECOTOX median (calibration check) ─────────
+# Only shown if I-2 has been run (predicted_lc50_ng_L column exists and is populated).
+# Compounds where both values exist are plotted; the 1:1 line is the ideal.
+# Systematic deviation indicates model bias; scatter quantifies prediction uncertainty.
+# This plot is critical for deciding whether predicted values are reliable enough
+# to use as TU denominators.
+
+fig5 <- NULL
+if ("predicted_lc50_ng_L" %in% names(ref)) {
+  p5_df <- ref %>%
+    filter(!is.na(predicted_lc50_ng_L), !is.na(median_lc50_ng_L),
+           predicted_lc50_ng_L > 0, median_lc50_ng_L > 0,
+           ecotox_group %in% c("fish", "crustacean"))  # algae has no prediction
+
+  message("Plot 5: ", nrow(p5_df),
+          " compound×group pairs with both OPERA prediction and ECOTOX median")
+
+  if (nrow(p5_df) > 0) {
+    ax_range5 <- range(log10(c(p5_df$predicted_lc50_ng_L, p5_df$median_lc50_ng_L)),
+                       na.rm = TRUE)
+    ax_lim5   <- 10^(ax_range5 + c(-0.5, 0.5))
+
+    fig5 <- plot_ly()
+    for (grp in c("fish", "crustacean")) {
+      d <- filter(p5_df, ecotox_group == grp)
+      if (nrow(d) == 0) next
+
+      # RMSE on log10 scale as a performance metric
+      rmse_log <- sqrt(mean((log10(d$predicted_lc50_ng_L) - log10(d$median_lc50_ng_L))^2,
+                            na.rm = TRUE))
+
+      fig5 <- fig5 %>%
+        add_trace(
+          data = d,
+          x = ~median_lc50_ng_L, y = ~predicted_lc50_ng_L,
+          type = "scatter", mode = "markers",
+          name = paste0(grp, " (RMSE\u2081\u2080=", round(rmse_log, 2), ")"),
+          text = ~paste0("<b>", chemical_name, "</b><br>CAS: ", cas_number,
+                         "<br>Group: ", ecotox_group,
+                         "<br>ECOTOX median: ",  signif(median_lc50_ng_L,    3), " ng/L",
+                         "<br>OPERA predicted: ", signif(predicted_lc50_ng_L, 3), " ng/L",
+                         "<br>Ratio (pred/obs): ", round(predicted_lc50_ng_L / median_lc50_ng_L, 2)),
+          hoverinfo = "text",
+          marker = list(size = 6, color = group_colours[grp], opacity = 0.7)
+        )
+    }
+    fig5 <- fig5 %>%
+      add_trace(
+        x = ax_lim5, y = ax_lim5,
+        type = "scatter", mode = "lines",
+        name = "1:1 line (perfect prediction)",
+        line = list(color = "black", dash = "dash", width = 1.2),
+        inherit = FALSE, showlegend = TRUE
+      ) %>%
+      layout(
+        title = "Plot 5 \u2014 OPERA Predicted vs ECOTOX Median LC50 [log\u2013log]",
+        xaxis = list(title = "ECOTOX Median LC50 (ng/L) [observed]",  type = "log"),
+        yaxis = list(title = "OPERA Predicted LC50 (ng/L) [predicted]", type = "log"),
+        legend = list(title = list(text = "Group (RMSE on log\u2081\u2080 scale)")),
+        annotations = list(list(
+          text = paste0("RMSE\u2081\u2080 < 0.5 log-units = good agreement  |  ",
+                        "RMSE\u2081\u2080 0.5\u20131.0 = acceptable  |  ",
+                        "> 1.0 = use with caution"),
+          xref = "paper", yref = "paper", x = 0, y = -0.12,
+          showarrow = FALSE, font = list(size = 11, color = "grey40")
+        ))
+      )
+  }
+}
+
+# ── 8. Coverage by lc50_source ────────────────────────────────────────────────
+# Bar chart: how many compound×group rows fall into each lc50_source category.
+# Shows the net gain from the CompTox gap-fill step.
+
+fig6 <- NULL
+if ("lc50_source" %in% names(ref)) {
+  coverage_df <- ref %>%
+    mutate(lc50_source = replace_na(as.character(lc50_source), "No denominator")) %>%
+    count(ecotox_group, lc50_source) %>%
+    mutate(lc50_source = factor(lc50_source,
+             levels = c("ECOTOX_median", "Both", "CompTox_predicted", "No denominator")))
+
+  source_colours <- c(
+    "ECOTOX_median"     = "#1f78b4",
+    "Both"              = "#33a02c",
+    "CompTox_predicted" = "#ff7f00",
+    "No denominator"    = "#cccccc"
+  )
+
+  fig6 <- plot_ly(coverage_df,
+      x = ~ecotox_group, y = ~n, color = ~lc50_source,
+      colors = source_colours,
+      type = "bar",
+      text = ~paste0(lc50_source, ": ", n, " compounds"),
+      hoverinfo = "text") %>%
+    layout(
+      title  = "Plot 6 \u2014 Denominator Coverage by Source and Taxonomic Group",
+      xaxis  = list(title = "Taxonomic group"),
+      yaxis  = list(title = "Number of compound\u00d7group rows"),
+      barmode = "stack",
+      legend = list(title = list(text = "LC50 source")),
+      annotations = list(list(
+        text = paste0("Orange = CompTox-only rows added by gap-fill  |  ",
+                      "Green = compounds present in both ECOTOX and CompTox  |  ",
+                      "Grey = no denominator available"),
+        xref = "paper", yref = "paper", x = 0, y = -0.12,
+        showarrow = FALSE, font = list(size = 11, color = "grey40")
+      ))
+    )
+}
+
+# ── 9. Summary table ──────────────────────────────────────────────────────────
+
+summary_tbl <- ref %>%
+  group_by(ecotox_group) %>%
+  summarise(
+    n_rows         = n(),
+    n_ecotox_data  = sum(!is.na(median_lc50_ng_L)),
+    n_SSD          = sum(hc5_method == "SSD",    na.rm = TRUE),
+    n_Both         = sum(hc5_method == "Both",   na.rm = TRUE),
+    n_Scaled_only  = sum(hc5_method == "Scaled", na.rm = TRUE),
+    pct_SSD        = round(100 * (n_SSD + n_Both) / n_rows, 1),
+    .groups = "drop"
+  )
+
+# Add n_ecotox data-richness if available
+if ("n_ecotox" %in% names(ref)) {
+  richness <- ref %>%
+    group_by(ecotox_group) %>%
+    summarise(
+      median_n_ecotox = round(median(n_ecotox, na.rm = TRUE), 1),
+      n_ge5           = sum(n_ecotox >= 5, na.rm = TRUE),
+      .groups = "drop"
+    )
+  summary_tbl <- left_join(summary_tbl, richness, by = "ecotox_group")
+}
+
+# Add CompTox coverage if I-2 has run
+if ("predicted_lc50_ng_L" %in% names(ref)) {
+  comptox_cov <- ref %>%
+    group_by(ecotox_group) %>%
+    summarise(n_predicted = sum(!is.na(predicted_lc50_ng_L)), .groups = "drop")
+  summary_tbl <- left_join(summary_tbl, comptox_cov, by = "ecotox_group")
+}
+
+# Add MoA coverage if I-3 has run
+if ("moa_group" %in% names(ref)) {
+  moa_cov <- ref %>%
+    group_by(ecotox_group) %>%
+    summarise(
+      n_moa_assigned    = sum(!is.na(moa_group)),
+      n_moa_specific    = sum(moa_group %in% c("AChE_inhibition", "PSII_inhibition",
+                                                "pyrethroid", "reactive"), na.rm = TRUE),
+      .groups = "drop"
+    )
+  summary_tbl <- left_join(summary_tbl, moa_cov, by = "ecotox_group")
+}
+
+dt_opts <- list(
+  pageLength = 20, scrollX = TRUE, autoWidth = FALSE, dom = "t",
+  initComplete = htmlwidgets::JS(
+    "function(settings, json) { $(this.api().table().header()).css({'white-space':'nowrap'}); }"
+  )
+)
+
+dt_summary <- datatable(
+  summary_tbl, rownames = FALSE, options = dt_opts,
+  caption = paste0(
+    "Reference table coverage summary by taxonomic group.  ",
+    "n_rows = total compound\u00d7group rows; ",
+    "n_ecotox_data = rows with ECOTOX median LC50; ",
+    "SSD = full Species Sensitivity Distribution fitted (n\u22655); ",
+    "Both = SSD + scaling factor both computed; ",
+    "Scaled = scaling factor only; ",
+    "n_predicted = CompTox/OPERA predictions (fish + crustacean only); ",
+    "n_moa_assigned = rows with Mode of Action group; ",
+    "n_moa_specific = rows with a specific mechanism (non-narcosis).")
+)
+
+# Top mismatches between SSD and Scaled (for audit)
+if (all(c("hc5_ssd_ng_L", "hc5_model_ng_L") %in% names(ref))) {
+  mismatch_df <- ref %>%
+    filter(!is.na(hc5_ssd_ng_L), !is.na(hc5_model_ng_L),
+           hc5_ssd_ng_L > 0, hc5_model_ng_L > 0) %>%
+    mutate(
+      ratio_ssd_scaled = round(hc5_ssd_ng_L / hc5_model_ng_L, 3),
+      log2_ratio       = round(log2(ratio_ssd_scaled), 3)
+    ) %>%
+    arrange(desc(abs(log2_ratio))) %>%
+    select(cas_number, chemical_name, ecotox_group, n_ecotox,
+           median_lc50_ng_L, hc5_ssd_ng_L, hc5_model_ng_L,
+           ratio_ssd_scaled, log2_ratio) %>%
+    mutate(across(c(median_lc50_ng_L, hc5_ssd_ng_L, hc5_model_ng_L), ~signif(.x, 4)))
+
+  dt_mismatch <- datatable(
+    mismatch_df, rownames = FALSE, filter = "top",
+    options = list(pageLength = 25, scrollX = TRUE, autoWidth = TRUE),
+    caption = "SSD vs Scaled HC5 — sorted by |log2(ratio)| (largest mismatch first)"
+  )
+} else {
+  dt_mismatch <- NULL
+}
+
+# ── 8b. Plot 7 — Mode of Action coverage (if I-3 ran) ────────────────────────
+# Stacked bar: number of unique compounds per moa_group × ecotox_group,
+# filled by moa_source to show how each group was classified.
+
+fig7 <- NULL
+moa_summary_tbl <- NULL
+
+if ("moa_group" %in% names(ref)) {
+
+  moa_group_levels <- c("narcosis", "AChE_inhibition", "PSII_inhibition",
+                        "pyrethroid", "reactive")
+
+  # Colour per moa_group (not per source — source shown in hover text)
+  moa_pal <- c(
+    narcosis        = "#cccccc",
+    AChE_inhibition = "#e31a1c",
+    PSII_inhibition = "#33a02c",
+    pyrethroid      = "#ff7f00",
+    reactive        = "#6a3d9a"
+  )
+
+  moa_df <- ref %>%
+    mutate(moa_group  = replace_na(as.character(moa_group),  "narcosis"),
+           moa_source = replace_na(as.character(moa_source), "default_narcosis")) %>%
+    count(ecotox_group, moa_group, moa_source) %>%
+    mutate(moa_group = factor(moa_group, levels = moa_group_levels))
+
+  n_no_moa <- sum(is.na(ref$moa_group))
+
+  fig7 <- plot_ly()
+  for (grp in moa_group_levels) {
+    d <- filter(moa_df, moa_group == grp)
+    if (nrow(d) == 0) next
+    fig7 <- fig7 %>%
+      add_trace(
+        data = d,
+        x = ~ecotox_group, y = ~n,
+        type = "bar", name = grp,
+        marker = list(color = moa_pal[grp]),
+        text = ~paste0("<b>", moa_group, "</b><br>",
+                       "Classified by: ", moa_source, "<br>",
+                       "N rows: ", n),
+        hoverinfo = "text"
+      )
+  }
+  fig7 <- fig7 %>%
+    layout(
+      title   = "Plot 7 \u2014 Mode of Action Group Coverage by Taxonomic Group",
+      xaxis   = list(title = "Taxonomic group"),
+      yaxis   = list(title = "Number of compound\u00d7group rows"),
+      barmode = "stack",
+      legend  = list(title = list(text = "Mode of action group")),
+      annotations = list(list(
+        text = paste0(
+          "Hover bars for classification source  |  ",
+          "Rows without Mode of Action assignment (shown as narcosis): ", n_no_moa),
+        xref = "paper", yref = "paper", x = 0, y = -0.14,
+        showarrow = FALSE, font = list(size = 11, color = "grey40")
+      ))
+    )
+
+  # Summary table: compounds per moa_group × ecotox_group × source
+  moa_summary_tbl <- ref %>%
+    mutate(moa_group  = replace_na(as.character(moa_group),  "not assigned"),
+           moa_source = replace_na(as.character(moa_source), "\u2014")) %>%
+    count(ecotox_group, moa_group, moa_source) %>%
+    arrange(ecotox_group, desc(n)) %>%
+    rename(
+      `Taxonomic group`       = ecotox_group,
+      `Mode of action group`  = moa_group,
+      `Classification source` = moa_source,
+      `N rows`                = n
+    )
+}
+
+# ── 8c. Plot 8 — Benchmark framework coverage per compound ────────────────────
+# Horizontal stacked bar: one bar per compound that appears in at least one
+# benchmark table, coloured by framework (US EPA, EU EQS, AU ANZG, CA CCME).
+# Sorted from most frameworks (top) to fewest (bottom).
+# Only shown if taxotox_install_benchmarks.R has been run (I-11).
+
+fig8 <- NULL
+
+bm_check_cols <- c("benchmark_usepa_fish_acute_ng_L",
+                   "benchmark_usepa_crust_acute_ng_L",
+                   "benchmark_usepa_algae_acute_ng_L",
+                   "benchmark_eu_eqs_aa_marine_ng_L",
+                   "benchmark_au_anzg_fresh_ng_L",
+                   "benchmark_au_anzg_marine_ng_L",
+                   "benchmark_ca_ccme_fresh_lt_ng_L")
+
+if (any(bm_check_cols %in% names(ref))) {
+
+  # Per unique compound: does it have ANY non-NA value in each of the 4 frameworks?
+  # (Reference table has 3 rows per CAS: fish / algae / crustacean — group before checking)
+  # summarise across() only for columns that actually exist (safe for partial runs).
+  bm_raw <- ref %>%
+    group_by(cas_number, chemical_name) %>%
+    summarise(across(any_of(bm_check_cols), ~ any(!is.na(.x))),
+              .groups = "drop")
+
+  # Helper: TRUE if any of the named columns exist and are TRUE in bm_raw
+  .or_cols <- function(df, cols) {
+    present <- intersect(cols, names(df))
+    if (length(present) == 0) return(rep(FALSE, nrow(df)))
+    rowSums(as.data.frame(df[present])) > 0
+  }
+
+  bm_presence <- bm_raw %>%
+    mutate(
+      in_usepa = .or_cols(bm_raw,
+                   c("benchmark_usepa_fish_acute_ng_L",
+                     "benchmark_usepa_crust_acute_ng_L",
+                     "benchmark_usepa_algae_acute_ng_L")),
+      in_eu    = .or_cols(bm_raw, "benchmark_eu_eqs_aa_marine_ng_L"),
+      in_au    = .or_cols(bm_raw,
+                   c("benchmark_au_anzg_fresh_ng_L", "benchmark_au_anzg_marine_ng_L")),
+      in_ca    = .or_cols(bm_raw, "benchmark_ca_ccme_fresh_lt_ng_L")
+    ) %>%
+    select(cas_number, chemical_name, in_usepa, in_eu, in_au, in_ca) %>%
+    filter(in_usepa | in_eu | in_au | in_ca) %>%
+    mutate(n_frameworks = as.integer(in_usepa) + as.integer(in_eu) +
+                          as.integer(in_au)    + as.integer(in_ca))
+
+  message("Plot 8: ", nrow(bm_presence),
+          " compounds covered by at least one benchmark framework")
+
+  if (nrow(bm_presence) > 0) {
+    # Compound order: most frameworks first; within tie, alphabetical
+    compound_order_bm <- bm_presence %>%
+      arrange(desc(n_frameworks), chemical_name) %>%
+      pull(chemical_name)
+
+    # Long format: one row per compound × framework (only where present = TRUE)
+    bm_long <- bm_presence %>%
+      pivot_longer(cols = c(in_usepa, in_eu, in_au, in_ca),
+                   names_to = "framework", values_to = "present") %>%
+      filter(present) %>%
+      mutate(
+        framework = recode(framework,
+          "in_usepa" = "US EPA",
+          "in_eu"    = "EU EQS",
+          "in_au"    = "AU ANZG",
+          "in_ca"    = "CA CCME"
+        ),
+        framework = factor(framework, levels = c("US EPA", "EU EQS", "AU ANZG", "CA CCME")),
+        y_val = 1L   # each present framework contributes 1 to the stacked total
+      )
+
+    bm_colours <- c(
+      "US EPA"  = "#1f78b4",
+      "EU EQS"  = "#e6ac00",
+      "AU ANZG" = "#33a02c",
+      "CA CCME" = "#e31a1c"
+    )
+
+    plot_h_px <- max(300, nrow(bm_presence) * 18 + 120)
+
+    fig8 <- plot_ly()
+    for (fw in c("US EPA", "EU EQS", "AU ANZG", "CA CCME")) {
+      d <- filter(bm_long, framework == fw)
+      if (nrow(d) == 0) next
+      fig8 <- fig8 %>%
+        add_trace(
+          data = d,
+          y    = ~factor(chemical_name, levels = rev(compound_order_bm)),
+          x    = ~y_val,
+          type = "bar",
+          orientation = "h",
+          name = fw,
+          marker = list(color = bm_colours[fw]),
+          text  = ~paste0("<b>", chemical_name, "</b><br>Framework: ", framework),
+          hoverinfo = "text"
+        )
+    }
+
+    fig8 <- fig8 %>%
+      layout(
+        title   = "Plot 8 \u2014 Benchmark Framework Coverage per Compound",
+        xaxis   = list(title = "Number of benchmark frameworks", dtick = 1,
+                       range = c(0, 4.2)),
+        yaxis   = list(title = "", tickfont = list(size = 10)),
+        barmode = "stack",
+        height  = plot_h_px,
+        legend  = list(title = list(text = "National framework")),
+        margin  = list(l = 220),
+        annotations = list(list(
+          text = paste0(
+            "Sorted: most frameworks (top) to fewest.  ",
+            nrow(bm_presence), " compounds covered by \u22651 benchmark."),
+          xref = "paper", yref = "paper", x = 0, y = -0.06,
+          showarrow = FALSE, font = list(size = 11, color = "grey40")
+        ))
+      )
+  }
+}
+
+# ── 9. Build HTML report ──────────────────────────────────────────────────────
+
+css <- "
+  body  { font-family: Arial, sans-serif; margin: 30px; color: #333; max-width: 1400px; }
+  h1    { color: #2c5f8a; border-bottom: 2px solid #2c5f8a; padding-bottom: 6px; }
+  h2    { color: #4a4a4a; margin-top: 40px; }
+  p.meta { color: #777; font-size: 0.9em; }
+  .section { margin-bottom: 50px; }
+  .note { background: #f5f5f5; border-left: 4px solid #2c5f8a;
+          padding: 10px 14px; margin: 14px 0; font-size: 0.93em; }
+"
+
+make_section <- function(...) tags$div(class = "section", ...)
+
+report <- tagList(
+  tags$html(lang = "en",
+    tags$head(
+      tags$meta(charset = "UTF-8"),
+      tags$title("TaxoTox Reference Validation"),
+      tags$style(HTML(css))
+    ),
+    tags$body(
+      tags$h1("TaxoTox Reference Validation — Diagnostic Report"),
+      tags$p(class = "meta",
+        paste0("Generated: ", format(Sys.time(), "%Y-%m-%d %H:%M"),
+               "  |  ECOTOX rows: ", nrow(ecotox),
+               "  |  Reference rows: ", nrow(ref),
+               "  |  Reference source: ",
+               if (file.exists(ref_path)) "taxotox_reference.fst" else "reconstructed inline",
+               if ("predicted_lc50_ng_L" %in% names(ref))
+                 paste0("  |  CompTox gap-fill: YES (",
+                        sum(!is.na(ref$predicted_lc50_ng_L)), " predictions)")
+               else "  |  CompTox gap-fill: NOT RUN",
+               if ("moa_group" %in% names(ref))
+                 paste0("  |  Mode of Action: YES (",
+                        sum(!is.na(ref$moa_group)), " / ", nrow(ref), " rows assigned)")
+               else "  |  Mode of Action: NOT RUN",
+               if (any(bm_check_cols %in% names(ref)))
+                 paste0("  |  Benchmarks: YES")
+               else "  |  Benchmarks: NOT RUN")),
+
+      tags$p(
+        "This report validates the ", tags$code("taxotox_reference.fst"), " table produced by ",
+        tags$code("taxotox_install.R"), ". It covers four areas: ",
+        tags$b("(1)"), " correctness of the HC5 computation pipeline (Species Sensitivity Distribution fitting and empirical scaling); ",
+        tags$b("(2)"), " the assumption that LC50 and EC50 are interchangeable for Toxic Unit calculations; ",
+        tags$b("(3)"), " the quality of CompTox/OPERA gap-fill predictions relative to measured ECOTOX data; and ",
+        tags$b("(4)"), " coverage of the Mode of Action classification used by the CAMA method. ",
+        "All plots are interactive — hover for compound details, click legend entries to isolate groups."
+      ),
+
+      # Summary table
+      make_section(
+        tags$h2("1. HC5 Coverage Summary"),
+        tags$p(class = "note",
+          tags$b("What this shows: "), "a single summary of coverage across all install steps. ",
+          tags$b("n_ecotox_data"), " = rows with a measured ECOTOX median (the primary TU denominator). ",
+          tags$b("SSD / Both / Scaled"), " = HC5 method coverage: SSD = full log-normal Species Sensitivity Distribution ",
+          "fitted from ECOTOX data (n \u2265 5); Both = SSD + scaling factor computed; Scaled = scaling factor only. ",
+          tags$b("n_predicted"), " = CompTox/OPERA predictions available (fish and crustacean only; algae has no suitable endpoint). ",
+          tags$b("n_moa_assigned"), " = rows with a Mode of Action group assigned. ",
+          tags$b("n_moa_specific"), " = rows assigned to a specific mechanism (acetylcholinesterase inhibition, ",
+          "Photosystem II inhibition, pyrethroid, or reactive) rather than the default narcosis. ",
+          "Columns not shown are absent because that install step has not been run yet."),
+        as.tags(dt_summary)
+      ),
+
+      # Plot 1
+      make_section(
+        tags$h2("2. HC5 (SSD-fitted) vs Median LC50 [log\u2013log]"),
+        tags$p(class = "note",
+          tags$b("What this shows: "), "the relationship between the SSD-derived HC5 and the median LC50 ",
+          "for all data-rich compound\u00d7group pairs (n \u2265 5). ",
+          tags$b("Expected pattern: "), "a tight log-linear cloud with slope \u2248 1, ",
+          "offset below the 1:1 line by log\u2081\u2080(k). ",
+          "The solid coloured lines show the theoretical position y = x \u00d7 k for each group; ",
+          "the dotted lines are OLS fits to the actual data. ",
+          tags$b("What to look for: "),
+          "OLS slope close to 1 (proportional scaling), ",
+          "OLS intercept close to the k-line (scaling factor is unbiased), ",
+          "low scatter around the fit (k is a good predictor). ",
+          "Point size is proportional to n_ecotox."),
+        as.tags(fig1)
+      ),
+
+      # Plot 2
+      make_section(
+        tags$h2("3. Scaled HC5 vs SSD-fitted HC5 (agreement)"),
+        tags$p(class = "note",
+          tags$b("What this shows: "), "direct comparison between the two HC5 estimates for all data-rich rows. ",
+          "x-axis = hc5_model_ng_L (median \u00d7 k); y-axis = hc5_ssd_ng_L (full SSD). ",
+          tags$b("Expected pattern: "), "points along the 1:1 diagonal. ",
+          tags$b("What to look for: "),
+          "systematic offset above or below the diagonal indicates that k over- or under-estimates HC5 ",
+          "at the extremes of the LC50 range (heteroscedasticity). ",
+          "Wide scatter quantifies the uncertainty in using the scaling factor for data-poor compounds. ",
+          "This plot is empty if taxotox_reference.fst was not yet updated with the scaling factor (re-run install)."),
+        as.tags(fig2)
+      ),
+
+      # Plot 3
+      make_section(
+        tags$h2("4. Median LC50 vs Median EC50 (endpoint interchangeability)"),
+        tags$p(class = "note",
+          tags$b("What this shows: "), "for compounds where both LC50 and EC50 data exist in ECOTOX, ",
+          "this plots their separate medians against each other. ",
+          tags$b("Why it matters: "), "TaxoTox combines LC50 and EC50 into a single median before computing TU. ",
+          "This is standard practice (Backhaus & Faust, 2012) but rests on the assumption that the two ",
+          "endpoint types produce similar concentration estimates for acute aquatic toxicity. ",
+          tags$b("Expected pattern: "), "points near the 1:1 line. ",
+          tags$b("What to look for: "),
+          "systematic divergence (e.g. EC50 consistently lower than LC50 for a group) would indicate ",
+          "the endpoints should be kept separate in the aggregation step."),
+        as.tags(fig3)
+      ),
+
+      # Plot 4
+      make_section(
+        tags$h2("5. Distribution of k = HC5 (SSD) / Median LC50"),
+        tags$p(class = "note",
+          tags$b("What this shows: "), "the distribution of the HC5/median ratio across all ",
+          "data-rich compounds, separately per taxonomic group. ",
+          "The dashed vertical line marks the group median (the k value used in the scaling factor). ",
+          tags$b("Why it matters: "), "k is assumed constant within each group. ",
+          "If the distribution is narrow and unimodal, this assumption holds well. ",
+          tags$b("What to look for: "),
+          "a narrow peak centred on the median line = low uncertainty in scaled HC5 estimates; ",
+          "a wide or bimodal distribution = k is a poor predictor for some compound classes ",
+          "and scaled HC5 estimates carry substantial uncertainty."),
+        as.tags(fig4)
+      ),
+
+      # Plot 5 — CompTox validation (conditional)
+      if (!is.null(fig5)) {
+        make_section(
+          tags$h2("6. OPERA Predicted vs ECOTOX Median LC50 (CompTox gap-fill calibration)"),
+          tags$p(class = "note",
+            tags$b("What this shows: "), "for compounds with both a measured ECOTOX median and an OPERA ",
+            "model prediction, this plot compares the two on a log-log scale. ",
+            tags$b("Why it matters: "), "the CompTox/OPERA predictions are used as TU denominators for ",
+            "compounds absent from ECOTOX. This plot calibrates our confidence in those predictions ",
+            "by testing them against measured data for compounds where we know the answer. ",
+            tags$b("Expected pattern: "), "points near the 1:1 line. ",
+            tags$b("Performance benchmark: "),
+            "RMSE\u2081\u2080 < 0.5 log-units = good (within ~3\u00d7); ",
+            "0.5\u20131.0 = acceptable for screening; > 1.0 = use with caution. ",
+            "OPERA aquatic toxicity models typically achieve RMSE \u2248 0.6\u20130.8 log-units on external test sets ",
+            "(Mansouri et al., 2018)."),
+          as.tags(fig5)
+        )
+      } else tags$div(),
+
+      # Plot 6 — coverage (conditional)
+      if (!is.null(fig6)) {
+        make_section(
+          tags$h2("7. Denominator Coverage by Source"),
+          tags$p(class = "note",
+            tags$b("What this shows: "), "how many compound\u00d7group rows have a usable TU denominator, ",
+            "broken down by data source. ",
+            tags$b("Blue"), " = ECOTOX median only (most reliable). ",
+            tags$b("Green"), " = compound present in both ECOTOX and CompTox (can be cross-validated). ",
+            tags$b("Orange"), " = CompTox prediction only, no ECOTOX data (gap-fill rows, n_ecotox = 0). ",
+            tags$b("Grey"), " = no denominator available (algae gap-fill not possible; some CAS not in CompTox). ",
+            tags$b("Why it matters: "), "orange rows represent the net gain from the I-2 gap-fill step; ",
+            "compounds in grey will still produce no TU contribution in the app."),
+          as.tags(fig6)
+        )
+      } else tags$div(),
+
+      # Plot 7 — Mode of Action coverage (conditional)
+      if (!is.null(fig7)) {
+        make_section(
+          tags$h2("8. Mode of Action Group Coverage"),
+          tags$p(class = "note",
+            tags$b("What this shows: "), "how many compound\u00d7group rows in the reference table ",
+            "have been assigned to a Mode of Action group, and how each was classified. ",
+            tags$b("Blue"), " = classified by chemical name pattern matching (highest confidence — ",
+            "captures major pesticide classes: acetylcholinesterase inhibitors, Photosystem II inhibitors, ",
+            "pyrethroids, reactive chemicals). ",
+            tags$b("Orange"), " = classified by LogKow (Verhaar scheme) where no name pattern matched. ",
+            tags$b("Grey"), " = default assignment to narcosis (no name pattern or LogKow available). ",
+            tags$b("Why it matters: "), "for the Concentration Addition with Mode of Action grouping (CAMA) ",
+            "method to produce results that differ from standard Concentration Addition, compounds in the ",
+            "same sample must span multiple Mode of Action groups. A table dominated by 'narcosis' means ",
+            "CAMA will return the same result as standard TU/PTI for most samples."),
+          as.tags(fig7),
+          tags$br(),
+          if (!is.null(moa_summary_tbl))
+            as.tags(datatable(moa_summary_tbl, rownames = FALSE,
+                              options = list(pageLength = 30, scrollX = TRUE, dom = "t",
+                                             autoWidth = FALSE),
+                              caption = "Mode of Action group counts per taxonomic group and classification source"))
+          else tags$div()
+        )
+      } else tags$div(),
+
+      # Plot 8 — Benchmark coverage (conditional)
+      if (!is.null(fig8)) {
+        make_section(
+          tags$h2("9. Benchmark Framework Coverage per Compound"),
+          tags$p(class = "note",
+            tags$b("What this shows: "), "every compound in the reference table that appears in at ",
+            "least one national benchmark table, as a horizontal stacked bar. Each colour segment ",
+            "represents one national framework that provides a benchmark for that compound. ",
+            "Compounds are sorted from most frameworks (top) to fewest (bottom). ",
+            tags$b("Why it matters: "), "benchmark coverage is uneven across compound classes — ",
+            "the EU Environmental Quality Standards list only ~45 priority substances, while US EPA ",
+            "and Canada CCME cover more pesticides. Compounds absent from all benchmarks will receive ",
+            "a Hazard Quotient of zero and contribute nothing to the Hazard Index, underestimating ",
+            "risk in samples dominated by unregulated chemicals. ",
+            tags$b("Colours: "),
+            tags$span(style = "color: #1f78b4; font-weight: bold;", "US EPA"), " | ",
+            tags$span(style = "color: #e6ac00; font-weight: bold;", "EU EQS"), " | ",
+            tags$span(style = "color: #33a02c; font-weight: bold;", "AU ANZG"), " | ",
+            tags$span(style = "color: #e31a1c; font-weight: bold;", "CA CCME"), "."),
+          as.tags(fig8)
+        )
+      } else tags$div(),
+
+      # Mismatch table
+      if (!is.null(dt_mismatch)) {
+        make_section(
+          tags$h2(if (!is.null(fig6) || !is.null(fig7) || !is.null(fig8))
+                    "10. SSD vs Scaled HC5 \u2014 Largest Discrepancies"
+                  else "6. SSD vs Scaled HC5 \u2014 Largest Discrepancies"),
+          tags$p(class = "note",
+            tags$b("What this shows: "), "the full table of compound\u00d7group rows where both HC5 methods ",
+            "were computed, sorted by |log2(SSD/Scaled)| — largest disagreements first. ",
+            "Use this table to identify specific compounds where the scaling factor performs poorly ",
+            "and where caution is warranted when interpreting HC5-based TU outputs."),
+          as.tags(dt_mismatch)
+        )
+      } else tags$div()
+    )
+  )
+)
+
+# ── 9. Write output ───────────────────────────────────────────────────────────
+
+out_path <- "../Docs/validate_reference.html"
+save_html(report, out_path)
+message("Report saved: ", normalizePath(out_path))

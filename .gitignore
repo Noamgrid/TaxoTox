@@ -1,0 +1,16 @@
+# API keys — never commit
+Code/comptox_api_key.txt
+
+# Local install state — machine-specific, not shared
+Data/install_timestamps.csv
+
+# Large data files — stored locally, not in repo
+Data/final_ecotox_data.fst
+Data/taxotox_reference.fst
+Data/Known_CAS.fst
+Data/Known_CAS_backup.fst
+
+# R session artefacts
+.Rhistory
+.RData
+.Rproj.user/

@@ -1,4 +1,17 @@
-setwd("c:/Users/Yair/Documents/yair/research/estuary_rehabilitation/yairs_stuff/Students/Noam/TaxoTox/Code")
+# Set working directory to this script's location.
+# Works in: RStudio (interactive/Source), VSCode source(), Rscript --file=
+.script_dir <- tryCatch(
+  dirname(rstudioapi::getActiveDocumentContext()$path),          # RStudio
+  error = function(e) tryCatch(
+    dirname(normalizePath(sys.frames()[[1]]$ofile)),             # source() in VSCode/R terminal
+    error = function(e) {
+      f <- sub("--file=", "", commandArgs(FALSE)[grep("--file=", commandArgs(FALSE))])
+      if (length(f) && nzchar(f)) dirname(normalizePath(f))     # Rscript --file=
+      else getwd()
+    }
+  )
+)
+setwd(.script_dir)
 
 # Purpose: Independent benchmark validation.
 #   1. Query ECOTOX directly for LC50 / EC50 values (fish, algae, crustacean).
@@ -18,8 +31,7 @@ library(plotly)
 
 # ── 1. Query ECOTOX ───────────────────────────────────────────────────────────
 
-conn <- dbConnect(RSQLite::SQLite(),
-  "C:/Users/Yair/AppData/Local/ECOTOXr/ECOTOXr/Cache/ecotox_ascii_03_13_2025.sqlite")
+conn <- dbConnect(RSQLite::SQLite(), ECOTOXr::get_ecotox_sqlite_file())
 
 message("Querying ECOTOX...")
 raw <- dbGetQuery(conn, "

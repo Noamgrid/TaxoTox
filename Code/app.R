@@ -326,8 +326,8 @@ server <- function(input, output, session) {
     # final_ecotox_data: Pre-processed ECOTOX data containing median acute
     #                    LC50/EC50 (conc_ng_L) per compound (cas_number) and
     #                    taxonomic group (ecotox_group).
-    Known_CAS         <- read.fst("../Data/Known_CAS.fst",         as.data.table = TRUE)
-    final_ecotox_data <- read.fst("../Data/final_ecotox_data.fst", as.data.table = TRUE)
+    Known_CAS         <- read.fst("Data/Known_CAS.fst",         as.data.table = TRUE)
+    final_ecotox_data <- read.fst("Data/final_ecotox_data.fst", as.data.table = TRUE)
 
     # ── Button state management (D) ───────────────────────────────────────────
     # Disable buttons 2 and 3 at startup; enable reactively as prerequisites met.
@@ -392,7 +392,7 @@ server <- function(input, output, session) {
     # fuzzy matches and manual entries across a session and can be reviewed by
     # administrators to expand the Known_CAS database over time.
     append_to_temp_cas <- function(new_data) {
-        temp_cas_path <- "../Data/temp_CAS.fst"
+        temp_cas_path <- "Data/temp_CAS.fst"
         if (!all(c("PREFERRED_NAME", "CASRN") %in% names(new_data)))
             stop("New data must contain PREFERRED_NAME and CASRN columns.")
         temp_cas_dt <- if (file.exists(temp_cas_path)) {
