@@ -17,6 +17,21 @@
 
 library(ECOTOXr)
 
+# ── Optional: curate temp_CAS before updating ──────────────────────────────────
+temp_path <- file.path(dirname(getwd()), "Data", "temp_CAS.fst")
+if (file.exists(temp_path)) {
+  library(fst)
+  n_temp <- nrow(read.fst(temp_path, as.data.table = FALSE))
+  if (n_temp > 0) {
+    ans <- toupper(trimws(readline(sprintf(
+      "temp_CAS.fst has %d unreviewed compound(s). Run curation now? [Y/N]: ", n_temp
+    ))))
+    if (ans == "Y") source("taxotox_curate.R")
+  }
+}
+
+# ── Download latest ECOTOX database ───────────────────────────────────────────
 download_ecotox_data()
 
 cat("ECOTOX database update complete.\n")
+cat("Next step: run taxotox_install.R to rebuild taxotox_reference.fst.\n")

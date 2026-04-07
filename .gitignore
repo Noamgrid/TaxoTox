@@ -1,8 +1,13 @@
 # API keys — never commit
 Code/comptox_api_key.txt
+# Google service account key (any JSON in Data/ or Code/ that looks like a key)
+Code/taxotox-service.json
+
+*-[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f].json
 
 # Local install state — machine-specific, not shared
 Data/install_timestamps.csv
+Data/dtxsid_map.csv
 
 # Large data files — stored locally, not in repo
 Data/final_ecotox_data.fst
@@ -14,3 +19,12 @@ Data/Known_CAS_backup.fst
 .Rhistory
 .RData
 .Rproj.user/
+.Rprofile
+
+# IDE and tool configuration — local only
+.claude/
+.vscode/
+.gitattributes
+
+# ShinyApps deployment state — machine-specific
+rsconnect/

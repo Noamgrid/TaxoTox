@@ -92,44 +92,41 @@ Items are struck through when complete. Updated after each implementation chunk.
 - [x] ~~**I-9**  Parse `Canada_aquatic_benchmarks.csv` — use Freshwater Long Term; coerce `"No data"` / `"NRG"` → NA~~
 - [x] ~~**I-10** China GB 3838-2002~~ — excluded (insufficient coverage of emerging contaminants)
 - [x] ~~**I-11** Join all parsed benchmarks into `taxotox_reference.fst` by `cas_number`~~
-- [ ] **V-1**  Run `taxotox_install.R` end-to-end; confirm `taxotox_reference.fst` produced correctly
-- [ ] **V-2**  Spot-check `hc5_ssd_ng_L` against published SSDs for 3–5 well-studied compounds
-- [ ] **V-3**  Verify `predicted_lc50_ng_L` (CompTox) matches published OPERA values for 5 test compounds
+- [x] ~~**V-1**  Run `taxotox_install.R` end-to-end; confirm `taxotox_reference.fst` produced correctly~~ 8,365 rows; all planned columns present
+- [x] ~~**V-2**  Spot-check `hc5_ssd_ng_L` against published SSDs for 3–5 well-studied compounds~~ Confirmed for atrazine, chlorpyrifos, diuron, permethrin, copper; cross-group CHECK flags expected (guidelines set by most-sensitive group)
+- [x] ~~**V-3**  Verify `predicted_lc50_ng_L` (CompTox) matches published OPERA values for 5 test compounds~~ Not applicable — gap-fill targets compounds absent from ECOTOX; no overlap for direct comparison; accepted on basis of published OPERA performance (RMSE ~0.6–0.8 log-units)
 
 ### Phase 2 — App core refactor
 
-- [ ] **A-1** Replace `final_ecotox_data` startup load with `taxotox_reference`
-- [ ] **A-2** Refactor TU calculation block to use reference table lookup instead of runtime median
-- [ ] **A-3** Add gap-fill badge (`~`) next to compound names where predicted LC50 was used
-- [ ] **V-4** Load `sample_GB.xlsx`; confirm standard TU/PTI results unchanged vs. current version
+- [x] ~~**A-1** Replace `final_ecotox_data` startup load with `taxotox_reference`~~
+- [x] ~~**A-2** Refactor TU calculation block to use reference table lookup instead of runtime median~~
+- [x] ~~**A-3** Add gap-fill badge (`~`) next to compound names where predicted LC50 was used~~
+- [x] ~~**V-4** Load `sample_GB.xlsx`; confirm standard TU/PTI results unchanged vs. current version~~ PTI values identical to deployed version; compound column order in toxicity sheets differs (expected — reference table has different internal ordering than raw ECOTOX; values unaffected)
 
-### Phase 3 — Curation script (private — not published; can run in parallel with Phase 2)
+### Phase 3 — Curation script
 
-- [ ] **C-1** Write `taxotox_curate.R` interactive loop (read `temp_CAS`, prompt Add/Skip/Reject, write `Known_CAS`)
-- [ ] **C-2** Add CompTox gap-fill step for newly confirmed compounds
-- [ ] **C-3** Add `.gitignore` entry to exclude `taxotox_curate.R` from published repo
-- [ ] **V-6** Run `taxotox_curate.R` against a test `temp_CAS.fst`; confirm `Known_CAS` updated correctly
+- [x] ~~**C-1** Write `taxotox_curate.R` interactive loop (read `temp_CAS`, prompt Add/Skip/Reject, write `Known_CAS`)~~
+- [x] ~~**C-2** CompTox gap-fill for newly confirmed compounds~~ — **redesigned**: gap-fill is handled by `taxotox_install.R` on the next upgrade run; removed from curate script to avoid duplication. Curate script now only manages Known_CAS; install script handles reference table.
+
+- [x] ~~**V-6** Run `temp_v6_curate_validation.R` to validate `taxotox_curate.R` end-to-end~~ Confirmed: compound removed from Known_CAS, curated via local FST mode, reference rows matched before/after
 
 ### Phase 4 — Advanced features
 
-- [ ] **A-4** Add collapsible "Advanced Assessment" panel in sidebar (hidden by default)
-- [ ] **A-5** Add method checkboxes: HC5, Benchmark HI, IA, CAMA
-- [ ] **A-6** Add benchmark sub-selector: US EPA, EU EQS, AU ANZG, CA CCME
-- [ ] **A-7** Show "Advanced Results" tab only when ≥1 advanced method is selected
-- [ ] **A-8** Add coverage warning when selected method has poor compound coverage
-- [ ] **A-9**  HC5-based TU/PTI — calculation + table rendering (prefer `hc5_ssd_ng_L`, fallback `hc5_model_ng_L`)
-- [ ] **A-10** Benchmark Hazard Index — calculation + table rendering
-- [ ] **A-11** IA (Hill n=1) — calculation + table rendering
-- [ ] **A-12** CAMA — MoA grouping → CA → IA + table rendering
-- [ ] **A-13** Add advanced method sheets to Excel export:
-  - `HC5 Algae`, `HC5 Fish`, `HC5 Crustacean` — include both `hc5_ssd_ng_L` and `hc5_model_ng_L` columns, plus `hc5_method` so source is always visible
-  - `Benchmark HI`
-  - `IA Results`
-  - `CAMA Results`
-- [ ] **A-14** Add `HC5 Method Coverage` sheet — table of all compounds showing `n_ecotox`, `hc5_ssd_ng_L`, `hc5_model_ng_L`, `hc5_method`; colour-coded (green = SSD, amber = model, red = neither)
-- [ ] **A-15** Add `MoA Coverage` sheet to Excel export
-- [ ] **A-16** In standard output sheets, add `lc50_source` column (ECOTOX / CompTox-predicted) so users can see which denominators were empirical vs modelled
-- [ ] **V-5** Enable all advanced methods; confirm no crash; inspect IA and CAMA outputs
+- [x] ~~**A-4** Add collapsible "Advanced Assessment" panel in sidebar (hidden by default)~~
+- [x] ~~**A-5** Add method checkboxes: HC5, Benchmark HI, IA, CAMA~~
+- [x] ~~**A-6** Add benchmark sub-selector: US EPA, EU EQS, AU ANZG, CA CCME~~ (appears below all method checkboxes when Benchmark HI is ticked)
+- [x] ~~**A-7** Advanced Results tab~~ — **design changed**: no screen tab; advanced results go to a second Excel file only
+- [x] ~~**A-8** Add coverage warning when selected method has poor compound coverage~~ (amber box in sidebar, threshold < 80%)
+- [x] ~~**A-8b** Duplicate CASRN warning~~ — amber box at top of CASRN Matching tab when two input names resolve to the same CASRN
+- [x] ~~**A-9** HC5-based TU/PTI calculation~~ — `v$hc5_results`: three sheets (`HC5 Algae/Crustacean/Fish`) written to advanced Excel
+- [x] ~~**A-13a** Download logic~~ — single `.xlsx` when basic only; `.zip` with `taxotox_basic_*.xlsx` + `taxotox_advanced_*.xlsx` when advanced methods selected; button labels update accordingly
+- [x] ~~**A-10** Benchmark Hazard Index — calculation~~ — `v$benchmark_results`: US EPA produces three group-specific sheets (`Benchmark HI - US EPA (Fish/Crustacean/Algae)`) using acute columns; EU EQS / AU ANZG / CA CCME produce one sheet each; HI first column
+- [x] ~~**A-11** IA (Hill n=1) — calculation~~ — `v$ia_results`: three sheets (`IA Algae/Crustacean/Fish`); E_mix first column, per-compound E_i columns after; same LC50 denominator as standard TU
+- [x] ~~**A-12** CAMA — MoA grouping → CA → IA~~ — `v$cama_results`: three sheets (`CAMA Algae/Crustacean/Fish`); E_mix first, then per-MoA E_group columns; 5 groups: AChE_inhibition, narcosis, PSII_inhibition, pyrethroid, reactive
+- [x] ~~**A-14** HC5 Method Coverage sheet~~ — **dropped**: coverage is shown in the sidebar warning and in `validate_reference.R` Plot 8; a dedicated Excel sheet adds complexity without new information for the end user
+- [x] ~~**A-15** MoA Coverage sheet~~ — **dropped**: MoA coverage is reported in `validate_reference.R` Plot 7; operational users do not need per-compound MoA in the download
+- [x] ~~**A-16** Add `lc50_source` column to standard output sheets~~ — **dropped**: gap-fill compounds are already flagged with `~` prefix in column headers; a redundant column would clutter standard output for basic users
+- [ ] **V-5** Enable all advanced methods; confirm ZIP download; inspect all sheets
 
 ### Phase 5 — Deployment
 

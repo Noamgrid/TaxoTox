@@ -7,7 +7,6 @@
 "6967-29-9","DTXSID50219963","2-Chloro-N-(2,6-diethylphenyl)acetamide",225.72
 "2163-68-0","DTXSID6037807","2-Hydroxyatrazine",197.242
 "2814-20-2","DTXSID1027502","2-Isopropyl-6-methyl-4-pyrimidone",152.197
-"94-75-7","DTXSID0020442","2,4-Dichlorophenoxyacetic acid",221.03
 "16655-82-6","DTXSID2037506","3-Hydroxycarbofuran",237.255
 "3739-38-6","DTXSID1038321","3-Phenoxybenzoic acid",214.22
 "2327-02-8","DTXSID2041468","N-(3,4-Dichlorophenyl)urea",205.04
@@ -27,7 +26,6 @@
 "171262-17-2","DTXSID1037486","2-[(2,6-Diethylphenyl)(methoxymethyl)amino]-2-oxoacetic Acid",265.309
 "494847-39-1","DTXSID701017867","Alachlor sulfynilacetic acid",341.42
 "116-06-3","DTXSID0039223","Aldicarb",190.26
-"1646-88-4","DTXSID6023862","Aldicarb sulfone",222.26
 "1646-87-3","DTXSID1033161","Aldicarb sulfoxide",206.26
 "834-12-8","DTXSID1023869","Ametryn",227.33
 "3337-71-1","DTXSID8023890","Asulam",230.24
@@ -118,7 +116,7 @@
 "114311-32-9","DTXSID3034664","Imazamox",305.334
 "81335-37-7","DTXSID3024152","Imazaquin",311.341
 "81335-77-5","DTXSID3024287","Imazethapyr",289.335
-"138261-41-3","DTXSID5032442","Imidacloprid",255.66
+"138261413",NA,NA,NA
 "173584-44-6","DTXSID1032690","Indoxacarb",527.84
 "141112-29-0","DTXSID5034723","Isoxaflutole",359.32
 "142994-06-7","DTXSID30869925","2-Methylsulfonyl-4-trifluoromethylbenzoic acid",268.21
@@ -126,7 +124,6 @@
 "77501-63-4","DTXSID7024160","Lactofen",461.77
 "330-55-2","DTXSID2024163","Linuron",249.09
 "1634-78-2","DTXSID9020790","Malaoxon",314.29
-"121-75-5","DTXSID4020791","Malathion",330.35
 "94-74-6","DTXSID4024195","2-(4-Chloro-2-methylphenoxy)acetic acid",200.62
 "57837-19-1","DTXSID6024175","Metalaxyl",279.336
 "125116-23-6","DTXSID4034497","Metconazole",319.83
@@ -173,7 +170,6 @@
 "709-98-8","DTXSID8022111","N-(3,4-Dichlorophenyl)propanamide",218.08
 "2312-35-8","DTXSID4024276","Propargite",350.47
 "139-40-2","DTXSID3021196","2,4-Bis(isopropylamino)-6-chloro-1,3,5-triazine",229.71
-"60207-90-1","DTXSID8024280","Propiconazole",342.22
 "114-26-1","DTXSID7021948","Propoxur",209.245
 "23950-58-5","DTXSID2020420","Propyzamide",256.13
 "94125-34-5","DTXSID9034868","Prosulfuron",419.38
@@ -185,7 +181,6 @@
 "1982-49-6","DTXSID7032474","Siduron",232.327
 "122-34-9","DTXSID4021268","Simazine",201.66
 "122836-35-5","DTXSID6032645","Sulfentrazone",387.18
-"74222-97-2","DTXSID0034936","Sulfometuron-methyl",364.38
 "141776-32-1","DTXSID4034940","Sulfosulfuron",470.48
 "65600-62-6","DTXSID40215858","2,3,3-Trichloro-2-propenesulfonic acid",225.46
 "107534-96-3","DTXSID9032113","Tebuconazole",307.82
@@ -361,7 +356,6 @@
 "3568-24-9","DTXSID3046950","Propionylpromazine",340.49
 "139079-39-3","DTXSID10160886","ICI-214227",399.51
 "87857-41-8","DTXSID60236666","Desmethylsertraline",292.2
-NA,NA,NA,NA
 "67381-52-6","DTXSID501151716","5-(Aminosulfonyl)-N-[(1-ethyl-2-pyrrolidinyl)methyl]-2-hydroxybenzamide",327.4
 "1123-19-9","DTXSID30864258","3-Acetyl-3-methyloxolan-2-one",142.154
 "7776-05-8","DTXSID80998951","10-[2-(1-Methylpiperidin-2-yl)ethyl]-2-(methylsulfanyl)-5lambda~4~-phenothiazin-5(10H)-one",386.57
@@ -693,7 +687,6 @@ NA,NA,NA,NA
 "70887-94-4","DTXSID70895723","2H-Perfluoro-2-dodecenoate",558.114
 "70887-88-6","DTXSID00892326","3-(Perfluoropentyl)-3-fluoro-2-propenoic acid",358.083
 "102-77-2","DTXSID0021096","N-Oxydiethylene-2-benzothiazylsulfenamide",252.35
-"120-18-3","DTXSID5044788","Naphthalene-2-sulfonic acid",208.23
 "26530-20-1","DTXSID1025805","2-n-Octyl-4-isothiazolin-3-one",213.34
 "934-34-9","DTXSID6061315","Benzothiazolone",151.18
 "2043-47-2","DTXSID1062122","Fluorotelomer alcohol 4:2",264.091
@@ -803,7 +796,6 @@ NA,NA,NA,NA
 "78-40-0","DTXSID8026228","Triethyl phosphate",182.156
 "115-86-6","DTXSID1021952","Triphenyl phosphate",326.288
 "85-68-7","DTXSID3020205","Benzyl butyl phthalate",312.365
-"117-81-7","DTXSID5020607","Di(2-ethylhexyl) phthalate",390.564
 "84-66-2","DTXSID7021780","Diethyl phthalate",222.24
 "84-74-2","DTXSID2021781","Dibutyl 1,2-benzenedicarboxylate",278.348
 "117-84-0","DTXSID1021956","Di-n-octyl phthalate",390.564
@@ -1626,7 +1618,6 @@ NA,NA,NA,NA
 "94-19-9","DTXSID4046286","Sulfaethidole",284.35
 "57-67-0","DTXSID1023609","Sulfaguanidine",214.24
 "152-47-6","DTXSID2046179","Sulfalene",280.3
-"127-79-7","DTXSID0023612","Sulfamerazine",264.3
 "651-06-9","DTXSID5023613","Sulfamethoxydiazine",280.3
 "57-68-1","DTXSID6021290","Sulfamethazine",278.33
 "144-82-1","DTXSID5023615","Sulfamethizole",270.33
@@ -1837,7 +1828,6 @@ NA,NA,NA,NA
 "51-28-5","DTXSID0020523","2,4-Dinitrophenol",184.107
 "93-76-5","DTXSID5021388","2,4,5-Trichlorophenoxyacetic acid",255.48
 "1928-37-6","DTXSID80172875","2,4,5-T-methyl [ISO]",269.5
-"94-82-6","DTXSID7024035","2,4-Dichlorophenoxybutyric acid",249.09
 "609-19-8","DTXSID4026212","3,4,5-Trichlorophenol",197.44
 "160430-64-8","DTXSID901015148","N-[(6-Chloro-3-pyridinyl)methyl]-N′-cyano-N-methylethanimidamide",222.68
 "135158-54-2","DTXSID1032519","Acibenzolar-S-methyl",210.27
@@ -1926,7 +1916,6 @@ NA,NA,NA,NA
 "3691-35-8","DTXSID2032348","Chlorophacinone",374.82
 "5836-10-2","DTXSID5041778","Chloropropylate",339.21
 "142733-37-7","DTXSID10597537","3-Carbamoyl-2,4,5-trichlorobenzoic acid",268.47
-"1918-13-4","DTXSID4041783","Chlorthiamid",206.08
 "15545-48-9","DTXSID8052853","Chlorotoluron",212.68
 "1982-47-4","DTXSID7040287","Chloroxuron",290.75
 "101-21-3","DTXSID7020764","Chlorpropham",213.66
@@ -1956,15 +1945,11 @@ NA,NA,NA,NA
 "2163-69-1","DTXSID8041824","Cycluron",198.31
 "86560-92-1","DTXSID3048108","Cyfluthrin diastereoisomer I",434.29
 "76703-65-6","DTXSID801033434","(R)-alpha-Cyano-3-phenoxybenzyl (Z)-(1S)-cis-3-(2-chloro-3,3,3-trifluoropropenyl)-2,2-dimethylcyclopropanecarboxylate",449.85
-"57966-95-7","DTXSID6032358","Cymoxanil",198.182
-"67375-30-8","DTXSID7041201","alpha-Cypermethrin",416.3
 "22936-86-3","DTXSID6040294","2- Chloro-4-cyclopropylamino-6-isopropylamino-s-triazine",227.7
 "94361-06-5","DTXSID0032601","Cyproconazole",291.78
 "121552-61-2","DTXSID1032359","Cyprodinil",225.295
-"66215-27-8","DTXSID6023999","Cyromazine",166.188
 "42609-52-9","DTXSID2058099","Daimuron",268.36
 "75-99-0","DTXSID2021575","Dalapon",142.96
-"1596-84-5","DTXSID9020370","Daminozide",160.173
 "533-74-4","DTXSID7024902","Dazomet",162.27
 "134-62-3","DTXSID2021995","DEET",191.274
 "8065-48-3","DTXSID5022306","Demeton",516.66
@@ -1977,17 +1962,14 @@ NA,NA,NA,NA
 "2303-16-4","DTXSID2020391","Diallate",270.21
 "6597-78-0","DTXSID1041849","Dicamba-methyl",235.06
 "2463-84-5","DTXSID0041850","Dicapthon",297.65
-"97-17-6","DTXSID8040274","Dichlofenthion",315.14
 "1085-98-9","DTXSID5041851","Dichlofluanid",333.22
 "37764-25-3","DTXSID4027997","Dichlormid",208.08
 "2008-58-4","DTXSID7022170","2,6-Dichlorobenzamide",190.02
-"97-23-4","DTXSID6021824","Dichlorophen",269.12
 "120-36-5","DTXSID0020440","Dichlorprop",235.06
 "23844-57-7","DTXSID90866617","Dichlorprop-methyl",249.09
 "75736-33-3","DTXSID2058178","Diclobutrazol",328.24
 "75021-71-5","DTXSID70515398","(2S)-2-[4-(2,4-Dichlorophenoxy)phenoxy]propanoic acid",327.16
 "75021-72-6","DTXSID60226002","Propanoic acid, 2-(4-(2,4-dichlorophenoxy)phenoxy)-, methyl ester, (2S)-",341.18
-"99-30-9","DTXSID2020426","Dichloran",207.01
 "115-32-2","DTXSID4020450","Dicofol",370.48
 "87130-20-9","DTXSID5037527","Diethofencarb",267.325
 "119446-68-3","DTXSID4032372","Difenoconazole",406.26
@@ -2012,7 +1994,6 @@ NA,NA,NA,NA
 "78-34-2","DTXSID9020534","Dioxathion",456.52
 "82-66-6","DTXSID4032378","Diphacinone",340.378
 "957-51-7","DTXSID8024072","Diphenamid",239.318
-"122-39-4","DTXSID4021975","Diphenylamine",169.227
 "2764-72-9","DTXSID6034554","Diquat",184.241
 "5131-24-8","DTXSID3041902","Ditalimfos",299.28
 "97886-45-8","DTXSID9032379","Dithiopyr",401.41
@@ -2027,7 +2008,6 @@ NA,NA,NA,NA
 "115-29-7","DTXSID1020560","Endosulfan",406.9
 "34467-12-4","DTXSID60188035","Imidazo(2,1-b)thiazole-2-carboxylic acid, 5,6-dihydro-3-methyl-, ethyl ester, hydrochloride",248.73
 "2104-64-5","DTXSID7022174","O-Ethyl O-(p-nitrophenyl phenyl)phosphonothioate",323.3
-"133855-98-8","DTXSID1040372","Epoxiconazole",329.76
 "85785-20-2","DTXSID2058201","Esprocarb",265.42
 "60207-93-4","DTXSID2041913","Etaconazole",328.19
 "29973-13-5","DTXSID3037545","Ethiofencarb",225.31
@@ -2046,13 +2026,11 @@ NA,NA,NA,NA
 "119611-00-6","DTXSID8032548","4-(4-Chlorophenyl)-2-phenyl-2-(1H-1,2,4-triazol-1-ylmethyl)butyronitrile",336.82
 "24691-80-3","DTXSID8058035","Fenfuram",201.225
 "126833-17-8","DTXSID3032549","Fenhexamid",302.2
-"122-14-5","DTXSID4032613","Fenitrothion",277.23
 "3766-81-2","DTXSID4058077","Fenobucarb",207.273
 "93-72-1","DTXSID0021387","2-(2,4,5-Trichlorophenoxy)propionic acid",269.5
 "4841-20-7","DTXSID10863461","Fenoprop-methyl",283.53
 "62850-32-2","DTXSID5058145","Fenothiocarb",253.36
 "113158-40-0","DTXSID2057940","Fenoxaprop-P",333.72
-"72490-01-8","DTXSID7032393","Fenoxycarb",301.342
 "74738-17-3","DTXSID0036633","Fenpicionil",237.08
 "64257-84-7","DTXSID0024002","Fenpropathrin",349.43
 "67306-00-7","DTXSID9058157","Fenpropidin",273.464
@@ -2087,7 +2065,6 @@ NA,NA,NA,NA
 "136426-54-5","DTXSID5057965","Fluquinconazole",376.17
 "59756-60-4","DTXSID8024107","1-Methyl-3-phenyl-5-(3-(trifluoromethyl)phenyl)-4-pyridone",329.322
 "61213-25-0","DTXSID0041987","Flurochloridone",312.11
-"69377-81-7","DTXSID2034627","Fluroxypyr",255.03
 "56425-91-3","DTXSID3024108","Flurprimidol",312.292
 "96525-23-4","DTXSID5058228","Flurtamone",333.31
 "4319-02-2","DTXSID8063412","Benzoic acid, 3,5-dihydroxy-4-methoxy-",184.147
@@ -2139,7 +2116,6 @@ NA,NA,NA,NA
 "21609-90-5","DTXSID3040279","Leptophos",412.06
 "112-56-1","DTXSID6024674","2-(2-Butoxyethoxy)ethyl thiocyanate",203.3
 "103055-07-8","DTXSID5034357","Lufenuron",511.15
-"94-81-5","DTXSID4024193","Thitrol",228.67
 "2595-54-2","DTXSID0042117","Mecarbam",329.37
 "7619-35-4","DTXSID301365161","1,13-dimethyl-10-prop-2-enyl-10-azatricyclo[7.3.1.02,7]trideca-2(7),3,5-trien-4-ol",257.377
 "135590-91-9","DTXSID6037564","Mefenpyr-diethyl",373.23
@@ -2165,13 +2141,11 @@ NA,NA,NA,NA
 "315-18-4","DTXSID7020893","Mexacarbate",222.288
 "113-48-4","DTXSID6032562","Octylbicycloheptenedicarboximide",275.392
 "6923-22-4","DTXSID9034816","Monocrotophos",223.165
-"1746-81-2","DTXSID0037576","Monolinuron",214.65
 "150-68-5","DTXSID0020311","Monuron",198.65
 "15299-99-7","DTXSID5024211","Napropamide",271.36
 "132-66-1","DTXSID6032437","Naptalam",291.306
 "555-37-3","DTXSID4042200","Neburon",275.17
 "150824-47-8","DTXSID8041080","(E)-Nitenpyram",270.72
-"1836-75-5","DTXSID7020970","Nitrofen",284.09
 "10552-74-6","DTXSID5037579","Nitrothal-isopropyl",295.291
 "121451-02-3","DTXSID0034774","Noviflumuron",529.14
 "63284-71-9","DTXSID2042220","Nuarimol",314.74
@@ -2308,7 +2282,6 @@ NA,NA,NA,NA
 "327-98-0","DTXSID9038420","Trichloronat",333.59
 "60825-26-5","DTXSID8069432","Acetic acid, [(3,5,6-trichloro-2-pyridinyl)oxy]-, methyl ester",270.49
 "41814-78-2","DTXSID7037478","2,7,8,9-Tricyclazole",189.24
-"1912-26-1","DTXSID2042488","Trietazine",229.71
 "145099-21-4","DTXSID0043971","Trifloxysulfuron",437.35
 "68694-11-1","DTXSID2032500","Triflumizole",345.75
 "64628-44-0","DTXSID5034355","Triflumuron",358.7
@@ -2321,12 +2294,10 @@ NA,NA,NA,NA
 "83657-22-1","DTXSID7032505","(E)-1-(4-Chlorophenyl)-4,4-dimethyl-2-(1,2,4-triazol-1-yl)-1-penten-3-ol",291.78
 "2275-23-2","DTXSID7042510","Vamidothion",287.33
 "95-06-7","DTXSID7021289","Sulfallate",223.78
-"1929-77-7","DTXSID7024376","Vernolate",203.34
 "50471-44-8","DTXSID4022361","Vinclozolin",286.11
 "2655-14-3","DTXSID7058042","XMC",179.219
 "156052-68-5","DTXSID9032581","Zoxamide",336.64
 "18625-12-2","DTXSID70171872","Butanoic acid, 4-(2,4-dichlorophenoxy)-, methyl ester",263.11
-"94-80-4","DTXSID5020443","2,4-D Butyl ester",277.14
 "1928-38-7","DTXSID6041349","2,4-D-Methyl",235.06
 "1418095-02-9","DTXSID60891330","2-Carbamoyl-3,5,6-trichloro-4-cyanobenzenesulfonic acid",329.53
 "1668-54-8","DTXSID4041230","2-Amino-4-methoxy-6-methyl-1,3,5-triazine",140.146
@@ -2358,8 +2329,6 @@ NA,NA,NA,NA
 "205650-65-3","DTXSID0043719","Fipronil desulfinyl",389.08
 "201668-32-8","DTXSID60891451","[(4-Fluorophenyl)(propan-2-yl)carbamoyl]methanesulfonic acid",275.29
 "201668-31-7","DTXSID2037552","N-(4-Fluorophenyl)-N-methylethyl-aminooxoacetic acid",225.219
-"127202-53-3","DTXSID60904691","1-[(6-Chloro-3-pyridinyl)methyl]-4,5-dihydro-1H-imidazol-2-amine hydrochloride",247.12
-"120868-66-8","DTXSID1037563","Imidacloprid urea",211.65
 "2436-73-9","DTXSID60179100","MCPA methyl ester",214.65
 "2786-19-8","DTXSID70863023","Methyl 2-(4-chloro-2-methylphenoxy)propanoate",228.67
 "110964-79-9","DTXSID0074639","4-Mesyl-2-nitrobenzoic acid",245.21
@@ -2477,7 +2446,6 @@ NA,NA,NA,NA
 "65086-79-5","DTXSID80891271","Myreth sulfate",NA
 "118033-75-3","DTXSID50873943","2-[2-(Tetradecyloxy)ethoxy]ethyl hydrogen sulfate",382.56
 "216667-08-2","DTXSID50398742","ASB-14",434.68
-"121-54-0","DTXSID6023810","Benzethonium chloride",448.09
 "10328-35-5","DTXSID60872947","N-Benzyl-N,N-dimethyldodecan-1-aminium",304.541
 "23884-64-2","DTXSID90178585","Benzoxonium",364.593
 "10328-34-4","DTXSID3047007","Benzyl hexadecyl dimethyl ammonium",360.649
@@ -2521,3 +2489,28 @@ NA,NA,NA,NA
 "7104-58-7","DTXSID70542947","1-(4-Chlorophenyl)-1H-benzimidazol-5-amine",243.69
 "67098-95-5",NA,NA,NA
 "72748-35-7","DTXSID801024817","rel-(1R,3R)-3-(2-Chloro-3,3,3-trifluoro-1-propen-1-yl)-2,2-dimethylcyclopropanecarboxylic acid",242.62
+"133855988",NA,NA,NA
+"95147","DTXSID3095147","Soybean oil, sulfated, sodium salt",NA
+"85687",NA,NA,NA
+"29385431",NA,NA,NA
+"85405",NA,NA,NA
+"335762","DTXSID40335762","N-cyclobutyl-N-methyl-benzamide",189.258
+"1672588",NA,NA,NA
+"18559949",NA,NA,NA
+"131577",NA,NA,NA
+"42542109",NA,NA,NA
+"3567622",NA,NA,NA
+"2327028",NA,NA,NA
+"23950585",NA,NA,NA
+"2599113",NA,NA,NA
+"5746861",NA,NA,NA
+"10172608",NA,NA,NA
+"838857","DTXSID70838857","(Acetyloxy)(diphenyl)germane",286.894
+"78400",NA,NA,NA
+"115866",NA,NA,NA
+"375735","DTXSID50375735","2-benzoylhexanenitrile",201.269
+"2058948",NA,NA,NA
+"27503817",NA,NA,NA
+"2163680",NA,NA,NA
+"6190654",NA,NA,NA
+"25057890",NA,NA,NA

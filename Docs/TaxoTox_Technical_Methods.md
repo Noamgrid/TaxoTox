@@ -2,7 +2,7 @@
 
 > **Purpose**: Citable methods reference for the TaxoTox paper.
 > Sections are added incrementally as each feature is implemented.
-> Last updated: 2026-04-03
+> Last updated: 2026-04-07
 
 ---
 
@@ -15,9 +15,13 @@ ECOTOX Knowledgebase as the primary toxicological denominator.
 
 The application supports three taxonomic groups: fish, algae, and crustacean.
 Default behaviour uses the ECOTOX median LC50/EC50 as the TU denominator (Concentration
-Addition framework). Advanced methods — HC5-based TU, Benchmark Hazard Index,
-Independent Action, and CAMA — are opt-in and computed from the same pre-aggregated
-reference table.
+Addition framework). Advanced methods — HC5-based TU, Benchmark Hazard Index, Independent Action, and CAMA —
+are opt-in via an "Advanced Assessment" sidebar panel. When enabled, calculations run for
+all selected methods on the same button press. Results are delivered as two separate Excel
+files: `taxotox_basic_*.xlsx` (standard CA results, unchanged from default behaviour) and
+`taxotox_advanced_*.xlsx` (one sheet per advanced method × taxonomic group). When both files
+are produced they are bundled into a single `.zip` download. This separation intentionally
+keeps operational outputs clean while making research-grade comparisons available in Excel.
 
 ---
 
@@ -118,8 +122,20 @@ and $LC50_i$ is the species-sensitivity denominator for compound $i$ from the re
 | 1 | `median_lc50_ng_L` is not NA | ECOTOX median |
 | 2 | `predicted_lc50_ng_L` is not NA | CompTox/OPERA prediction |
 
-Compounds using a predicted denominator are flagged with a `~` prefix in output tables
-(to be implemented at step A-3).
+The denominator is selected at runtime using `dplyr::coalesce(median_lc50_ng_L, predicted_lc50_ng_L)`:
+the first non-NA value in priority order is used. Compounds with neither value available
+contribute no TU and do not appear in output tables.
+
+Previous versions of TaxoTox computed `median(conc_ng_L)` at runtime by scanning the full
+raw ECOTOX dataset (~118,000 rows). Step A-2 replaced this with a direct column lookup from
+`taxotox_reference.fst`, where the median is pre-computed at install time. The TU values
+produced are identical (confirmed by V-4), and startup time is substantially reduced because
+the large raw dataset is no longer loaded.
+
+Compounds using a predicted denominator are flagged with a `~` prefix in output table
+column headers and Excel export sheets (e.g. `~ibuprofen`). The flag is applied to any
+compound where `median_lc50_ng_L` is NA and `predicted_lc50_ng_L` was used instead,
+across all taxonomic groups. Plot axis labels are not flagged to preserve readability.
 
 ### 4.3 PTI risk thresholds
 
@@ -133,13 +149,23 @@ Compounds using a predicted denominator are flagged with a `~` prefix in output 
 
 ## 5. HC5 Methods
 
-### 5.1 Background
+### 5.1 Background and Formula
 
 The 5th percentile of the Species Sensitivity Distribution (HC5, "Hazardous Concentration
 for 5% of species") is a regulatory standard for deriving Environmental Quality Standards
 (ANZG 2018; EU TGD, 2011). Using HC5 as the TU denominator yields a more protective
 assessment than the median LC50, as it targets the most sensitive 5% of species rather
 than the median-sensitive species.
+
+$$TU_{ij}^{HC5} = \frac{C_{ij}}{HC5_i}$$
+
+$$PTI_j^{HC5} = \sum_i TU_{ij}^{HC5}$$
+
+where $HC5_i$ is selected by priority: `hc5_ssd_ng_L` if available (fitted SSD),
+otherwise `hc5_model_ng_L` (scaling factor estimate). The interpretation thresholds
+(PTI ≥ 1.0 acute, 0.1–1.0 chronic) are unchanged from the standard method, but
+because HC5 ≪ median LC50, HC5-based PTI values are systematically higher — more
+compounds will exceed thresholds.
 
 Two separate HC5 estimates are retained in `taxotox_reference.fst` so the source is
 always traceable in output and audit trails:
@@ -647,6 +673,7 @@ is stored as `"1912249"`). The spot-check script strips hyphens before lookup.
 | V-1 | Run `taxotox_install.R` end-to-end; confirm `taxotox_reference.fst` produced | **Confirmed** |
 | V-2 | Spot-check HC5 and median LC50 for 5 well-studied compounds | **Confirmed** |
 | V-3 | Verify CompTox predictions against published OPERA values | **Not applicable** — see below |
+| V-4 | Load `sample_GB.xlsx`; confirm standard TU/PTI results unchanged vs. deployed version | **Confirmed** |
 
 **V-1 result**: `taxotox_reference.fst` produced with 8,365 rows (3 taxonomic groups ×
 ~2,788 CAS numbers). All planned columns present including Mode of Action and all four
@@ -664,6 +691,15 @@ in sensitivity, not a computation error. The `<<< CHECK` flag in `temp_v2_spotch
 fires at 10× outside range; values in less-sensitive groups routinely exceed this
 threshold by design.
 
+**V-4 result**: The refactored app (`app.R` with `taxotox_reference.fst` denominator lookup)
+was run against `Data/sample_GB.xlsx` and its output compared to the previously deployed
+version of TaxoTox (which computed `median(conc_ng_L)` at runtime from `final_ecotox_data.fst`).
+Pollution Toxicity Index values were identical across all samples and all three taxonomic
+groups. The only observable difference was the order of compound columns in the toxicity
+worksheets of the Excel export, which changed because the reference table has a different
+internal row ordering than the raw ECOTOX dataset. Column order does not affect any
+computed value and is not scientifically meaningful.
+
 **V-3 result**: Not applicable. The CompTox gap-fill step (I-2) adds rows only for
 compounds with no ECOTOX data (`n_ecotox = 0`). There are therefore no compound × group
 pairs with both a measured ECOTOX median and a CompTox prediction, making a direct
@@ -675,19 +711,148 @@ log-units on external test sets) and are flagged in all outputs via the `lc50_so
 
 ## 10. Independent Action (IA)
 
-*(To be completed at step A-11)*
+### 10.1 Background
+
+Independent Action (IA), also called Response Addition or the Hewlett–Plackett model,
+is an alternative mixture toxicity framework to Concentration Addition. While CA assumes
+all compounds act by the same mechanism and their effects are fully additive at the dose
+level, IA assumes compounds act independently — each causes an effect according to its
+own dose-response curve, and the probability of the mixture causing no effect is the
+product of the probabilities of each individual compound causing no effect.
+
+IA is more appropriate than CA when compounds act via dissimilar mechanisms, particularly
+in environmentally realistic mixtures containing both specific-receptor-acting compounds
+and baseline narcotics. For the standard TaxoTox monitoring dataset (predominantly narcosis
+compounds), CA and IA produce similar results. Divergence increases when the mixture is
+dominated by one or two potent specific-acting compounds (e.g. a pyrethroid and an
+organophosphate at high TU fractions).
+
+### 10.2 Formula
+
+TaxoTox implements IA with a fixed Hill slope of n = 1 (log-logistic dose-response),
+which corresponds to a simple Langmuir saturation curve:
+
+$$E_i = \frac{C_i}{LC50_i + C_i}$$
+
+where $E_i$ is the fractional effect (0–1) of compound $i$ at measured concentration $C_i$,
+and $LC50_i$ is the same denominator used in the standard TU calculation
+(`dplyr::coalesce(median_lc50_ng_L, predicted_lc50_ng_L)`).
+
+The mixture fractional effect is then:
+
+$$E_{mix} = 1 - \prod_i (1 - E_i)$$
+
+$E_{mix}$ is dimensionless and bounded 0–1, where $E_{mix} = 0.5$ corresponds to a
+mixture effect equivalent to the LC50 — the same threshold at which $PTI = 1$ in
+the CA framework.
+
+### 10.3 Output
+
+Results are written to three sheets in the advanced Excel file (`IA Algae`, `IA Crustacean`,
+`IA Fish`). Each sheet has:
+
+- **`E_mix`** (first column) — mixture fractional effect per sample (0–1)
+- Per-compound **`E_i`** columns — individual fractional effects; useful for identifying
+  the dominant contributors to mixture risk
+
+### 10.4 Assumptions and Limitations
+
+- **Hill slope n = 1**: the sigmoidal steepness parameter is fixed at 1 for all compounds.
+  This is a common simplification in environmental mixture assessment (Backhaus & Faust, 2012).
+  Compounds with steeper dose-response curves (n > 1, e.g. some pyrethroids) will have their
+  individual fractional effects underestimated at low concentrations and overestimated at high.
+
+- **Missing concentrations treated as zero**: compounds present in the reference table but
+  absent from a given sample contribute $E_i = 0$ to the product, leaving $E_{mix}$ unchanged.
+
+- **Denominator same as standard TU**: IA does not require a separate denominator column.
+  This means compounds flagged with `~` (CompTox gap-fill) carry the same uncertainty
+  into IA calculations as into the standard PTI.
+
+---
+
+## 10.5 CAMA — Concentration Addition with Mode of Action Grouping
+
+### 10.5.1 Background
+
+CAMA (Concentration Addition within Mode of Action groups, Independent Action between groups)
+is a hybrid method that combines CA and IA to address the limitations of applying either
+framework alone to a multi-mechanistic mixture (Drescher & Boedeker, 1995; Altenburger et al., 2000).
+
+The reasoning: within a group of compounds sharing the same mode of action, CA is the
+correct model (joint similarity assumption holds). Between groups with different modes of
+action, IA is more appropriate (mechanisms are independent). CAMA exploits this by
+applying CA within mechanistic groups first, then IA across groups.
+
+### 10.5.2 Formula
+
+**Step 1 — Within-group CA** (per MoA group $g$, per sample $j$):
+
+$$group\_TU_{gj} = \sum_{i \in g} \frac{C_{ij}}{LC50_i}$$
+
+**Step 2 — Group fractional effect** (logistic transformation):
+
+$$E_{group,gj} = \frac{group\_TU_{gj}}{1 + group\_TU_{gj}}$$
+
+This converts the unbounded CA sum (TU) into a fractional effect (0–1) using the same
+Hill n = 1 assumption as IA. A group TU of 1.0 → $E_{group} = 0.5$.
+
+**Step 3 — Between-group IA**:
+
+$$E_{mix,j} = 1 - \prod_g (1 - E_{group,gj})$$
+
+### 10.5.3 Mode of Action Groups
+
+Five groups are used (see Section 8 for classification details):
+`narcosis`, `AChE_inhibition`, `PSII_inhibition`, `pyrethroid`, `reactive`.
+Compounds with no classifiable MoA default to `narcosis`.
+
+### 10.5.4 Output
+
+Results are written to three sheets (`CAMA Algae`, `CAMA Crustacean`, `CAMA Fish`).
+Each sheet has:
+
+- **`E_mix`** (first column) — mixture fractional effect per sample (0–1)
+- Per-group **`E_group`** columns (e.g. `E_narcosis`, `E_AChE_inhibition`) — useful for
+  seeing which mechanistic group drives the mixture risk
+
+### 10.5.5 Practical expectation
+
+Given the current dataset composition (~97% narcosis compounds; see Section 8.4), CAMA
+will in most cases return values very close to standard CA-based PTI. Divergence is
+expected only in samples where specific-acting compounds (organophosphates, pyrethroids,
+triazines) contribute meaningfully to total TU. The CAMA output is most informative as
+a sensitivity analysis: large differences between PTI and $E_{mix}^{CAMA}$ indicate that
+cross-mechanism interactions may be important.
+
+### 10.5.6 References
+
+- Drescher, K., & Boedeker, W. (1995). Assessment of the combined effects of substances:
+  the relationship between concentration addition and independent action. *Biometrics*, 51, 716–730.
+
+- Altenburger, R., et al. (2000). Predictability of the toxicity of multiple chemical
+  mixtures to Vibrio fischeri: mixtures composed of similarly acting chemicals.
+  *Environmental Toxicology and Chemistry*, 19(10), 2341–2347.
 
 ---
 
 ## 11. CASRN Resolution
 
-*(To be completed when curation script is documented — step C-1)*
+Compound names in the input file are resolved to CAS Registry Numbers (CASRNs) through two sequential layers:
+
+**Layer 1 — Known_CAS (exact, instant):** a curated internal table (`Known_CAS.fst`) of compound names and their CASRNs. Exact string matches are confirmed automatically with no user interaction. The table is designed to hold multiple synonyms per compound (e.g. "Albuterol", "Salbutamol", and "Albuterol / Salbutamol" may all map to the same CASRN 18559-94-9). Each entry has a `PREFERRED_NAME` which is the canonical display name used in all outputs.
+
+**Layer 2 — PubChem REST API (optional):** when enabled, unresolved names are queried live against the PubChem compound database via the `webchem` R package. Candidate matches are presented for user review in the CASRN Matching tab. Accepted matches are written to a temporary log (`temp_CAS` — local file or Google Sheet when deployed) for future integration into Known_CAS via the curation script.
+
+**Manual entry:** compounds still unresolved after both layers can have their CASRN entered directly in the CASRN Matching tab. These are also logged to `temp_CAS`.
+
+### Synonym handling and duplicate CASRN detection
+
+Known_CAS supports many-to-one name→CASRN mapping to accommodate synonyms and common name variants. If two different rows in the input file resolve to the same CASRN (e.g. the user supplied both "Albuterol" and "Salbutamol" as separate compounds), the app detects this and shows a warning in the CASRN Matching tab. The two rows are processed independently, which means their concentrations are counted separately and summed in the PTI — effectively double-counting the compound. The recommended corrective action is to remove one synonym from the input file before calculating.
 
 ---
 
 ## 12. Limitations and Caveats
-
-*(Running list — add entries as each method is implemented)*
 
 - **Combined LC50/EC50 median**: endpoints are combined on the assumption of
   interchangeability for acute aquatic toxicity. This is assessed empirically
