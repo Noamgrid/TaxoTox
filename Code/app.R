@@ -56,8 +56,10 @@
 #                              Aquatic Life Benchmarks (validation only)
 #   Code/update_ecotox.R     — downloads latest ECOTOX database (~quarterly)
 #   Code/install_dependencies.R — installs all required R packages
-#   Data/Known_CAS.fst       — curated CASRN lookup table
-#   Data/final_ecotox_data.fst — pre-processed ECOTOX toxicity data
+#   Data/Known_CAS.fst           — curated CASRN lookup table
+#   Data/taxotox_reference.fst   — pre-aggregated denominators (median LC50, HC5,
+#                                  predicted LC50, benchmarks, MoA) per compound × group
+#   Data/final_ecotox_data.fst   — raw ECOTOX test results (install only, not deployed)
 #
 # AUTHORS: Noam Gridish, Yair Suari
 #          School of Marine Sciences, Ruppin Academic Center, Israel
@@ -145,18 +147,47 @@ ui <- fluidPage(
                          selected = "col"),
 
             # ── Step 2: Run calculations ─────────────────────────────────────
-            actionButton("start_toxicity_calc", "2. Calculate Toxicity",
-                         class = "btn-default btn-block",
-                         style = "margin-top:10px;"),
+            uiOutput("calc_button_ui"),
             uiOutput("step2_status"),
 
             # ── Step 3: Export results ───────────────────────────────────────
-            downloadButton("download_results", "3. Download Results",
-                           class = "btn-default btn-block",
-                           style = "margin-top:10px;"),
+            uiOutput("download_button_ui"),
             hr(),
 
-            checkboxInput("use_pubchem", "Web search for pollutant names on/off", value = FALSE)
+            checkboxInput("use_pubchem", "Web search for pollutant names on/off", value = TRUE),
+
+            hr(),
+
+            # ── Advanced Assessment panel (A-4) ──────────────────────────────
+            checkboxInput("show_advanced", strong("Advanced Assessment"), value = FALSE),
+
+            conditionalPanel(
+                condition = "input.show_advanced == true",
+
+                # Method checkboxes (A-5)
+                tags$p(style = "margin-bottom:4px; font-weight:bold; font-size:13px;",
+                       "Methods:"),
+                checkboxInput("method_hc5",       "HC5-based TU/PTI",       value = FALSE),
+                checkboxInput("method_benchmark", "Benchmark Hazard Index",  value = FALSE),
+                checkboxInput("method_ia",        "Independent Action (IA)", value = FALSE),
+                checkboxInput("method_cama",      "CAMA",                    value = FALSE),
+
+                # Benchmark sub-selector (A-6) — below all methods, shown only when benchmark is checked
+                conditionalPanel(
+                    condition = "input.method_benchmark == true",
+                    hr(style = "margin:6px 0;"),
+                    tags$p(style = "margin-bottom:4px; font-weight:bold; font-size:13px;",
+                           "Benchmarks:"),
+                    checkboxInput("bm_usepa", "US EPA",  value = TRUE),
+                    checkboxInput("bm_eu",    "EU EQS",  value = FALSE),
+                    checkboxInput("bm_anzg",  "AU ANZG", value = FALSE),
+                    checkboxInput("bm_ccme",  "CA CCME", value = FALSE),
+                    hr(style = "margin:6px 0;")
+                ),
+
+                # Coverage warning (A-8) — rendered by server when coverage is low
+                uiOutput("advanced_coverage_warning")
+            )
         ),
 
         mainPanel(
@@ -260,6 +291,7 @@ ui <- fluidPage(
                         )
                         ),
                tabPanel("CASRN Matching",
+                        uiOutput("duplicate_casrn_warning"),
                         h4("Search Summary"),
                         verbatimTextOutput("cas_search_summary"),
                         hr(),
@@ -291,7 +323,8 @@ ui <- fluidPage(
                         DTOutput("tox_table_crustacean"),
                         h4("Fish"),
                         DTOutput("tox_table_fish")
-                        ),
+                        )
+
            )
         )
     )
@@ -300,6 +333,11 @@ ui <- fluidPage(
 # =============================================================================
 # SERVER
 # =============================================================================
+
+# ID of the Google Sheet used to log new compounds from app sessions.
+# The Sheet must be shared with the service account in taxotox-service.json.
+# Set TAXOTOX_SHEET_ID as an env var to override (e.g. for testing).
+TAXOTOX_SHEET_ID <- "1pftfWQNfIStasPqH1CvpDSAH3yHxYmjhggvAwlBaxDA"
 
 server <- function(input, output, session) {
 
@@ -316,6 +354,10 @@ server <- function(input, output, session) {
         manual_to_fill       = NULL,     # data.table of compounds with no CASRN yet
         final_search_results = data.table(),  # accumulates confirmed PREFERRED_NAME / CASRN pairs
         tox_results          = NULL,     # named list of result data.tables (one per taxonomic group)
+        hc5_results          = NULL,     # named list: HC5-based TU tables per group (advanced Excel)
+        benchmark_results    = NULL,     # named list: one HI table per selected benchmark framework
+        ia_results           = NULL,     # named list: IA effect-fraction tables per group
+        cama_results         = NULL,     # data.frame: CAMA E_mix per sample
         plots                = NULL,     # named list of ggplot objects
         manual_additions     = data.table(PREFERRED_NAME = character(), CASRN = character()),
         pending_unfound      = NULL       # saved when orientation-check modal is shown
@@ -326,8 +368,9 @@ server <- function(input, output, session) {
     # final_ecotox_data: Pre-processed ECOTOX data containing median acute
     #                    LC50/EC50 (conc_ng_L) per compound (cas_number) and
     #                    taxonomic group (ecotox_group).
-    Known_CAS         <- read.fst("Data/Known_CAS.fst",         as.data.table = TRUE)
-    final_ecotox_data <- read.fst("Data/final_ecotox_data.fst", as.data.table = TRUE)
+    Known_CAS          <- read.fst("../Data/Known_CAS.fst",         as.data.table = TRUE)
+    taxotox_reference  <- read.fst("../Data/taxotox_reference.fst", as.data.table = FALSE) %>%
+        mutate(cas_number = as.character(cas_number))
 
     # ── Button state management (D) ───────────────────────────────────────────
     # Disable buttons 2 and 3 at startup; enable reactively as prerequisites met.
@@ -344,6 +387,85 @@ server <- function(input, output, session) {
     observe({
         if (!is.null(v$tox_results)) shinyjs::enable("download_results")
         else                         shinyjs::disable("download_results")
+    })
+
+    # ── Advanced panel reactive helpers ──────────────────────────────────────────
+
+    # Any advanced method selected?
+    any_advanced <- reactive({
+        input$show_advanced &&
+            (input$method_hc5 || input$method_benchmark || input$method_ia || input$method_cama)
+    })
+
+    # Dynamic button labels
+    output$calc_button_ui <- renderUI({
+        if (any_advanced())
+            actionButton("start_toxicity_calc",
+                         tagList("2. Calculate Basic", br(), "& Advanced Toxicity"),
+                         class = "btn-default btn-block",
+                         style = "margin-top:10px; white-space:normal; height:auto; padding:8px 12px;")
+        else
+            actionButton("start_toxicity_calc", "2. Calculate Toxicity",
+                         class = "btn-default btn-block",
+                         style = "margin-top:10px;")
+    })
+
+    output$download_button_ui <- renderUI({
+        if (any_advanced())
+            downloadButton("download_results",
+                           tagList("3. Download Basic", br(), "& Advanced Results"),
+                           class = "btn-default btn-block",
+                           style = "margin-top:10px; white-space:normal; height:auto; padding:8px 12px;")
+        else
+            downloadButton("download_results", "3. Download Results",
+                           class = "btn-default btn-block",
+                           style = "margin-top:10px;")
+    })
+
+    # Coverage warning: fraction of matched compounds that have the required column
+    output$advanced_coverage_warning <- renderUI({
+        req(any_advanced(), v$tox_results)
+        msgs <- character(0)
+
+        matched_cas <- unique(gsub("-", "", v$final_search_results$CASRN))
+        ref_matched <- taxotox_reference %>% filter(cas_number %in% matched_cas)
+        n <- length(matched_cas)
+
+        if (input$method_hc5) {
+            n_covered <- ref_matched %>%
+                filter(!is.na(hc5_ssd_ng_L) | !is.na(hc5_model_ng_L)) %>%
+                distinct(cas_number) %>% nrow()
+            pct <- round(100 * n_covered / max(n, 1))
+            if (pct < 80) msgs <- c(msgs, sprintf("HC5: %d%% compound coverage", pct))
+        }
+        if (input$method_benchmark) {
+            bm_cols <- c(
+                if (input$bm_usepa) "benchmark_usepa_fish_acute_ng_L"  else NULL,
+                if (input$bm_eu)    "benchmark_eu_eqs_aa_marine_ng_L"  else NULL,
+                if (input$bm_anzg)  "benchmark_au_anzg_marine_ng_L"    else NULL,
+                if (input$bm_ccme)  "benchmark_ca_ccme_fresh_lt_ng_L"  else NULL
+            )
+            for (col in bm_cols) {
+                if (!col %in% names(ref_matched)) next
+                n_covered <- ref_matched %>% filter(!is.na(.data[[col]])) %>%
+                    distinct(cas_number) %>% nrow()
+                pct <- round(100 * n_covered / max(n, 1))
+                label <- switch(col,
+                    benchmark_usepa_fish_acute_ng_L  = "US EPA",
+                    benchmark_eu_eqs_aa_marine_ng_L  = "EU EQS",
+                    benchmark_au_anzg_marine_ng_L    = "AU ANZG",
+                    benchmark_ca_ccme_fresh_lt_ng_L  = "CA CCME")
+                if (pct < 80) msgs <- c(msgs, sprintf("%s: %d%% compound coverage", label, pct))
+            }
+        }
+
+        if (length(msgs) == 0) return(NULL)
+        tags$div(
+            style = "background:#fff3cd; border:1px solid #ffc107; border-radius:4px; padding:6px 8px; margin-top:6px; font-size:0.82em;",
+            tags$strong("\u26a0 Low coverage:"),
+            tags$ul(style = "margin:4px 0 0 0; padding-left:16px;",
+                    lapply(msgs, tags$li))
+        )
     })
 
     # ── Sidebar status badges (E) ─────────────────────────────────────────────
@@ -386,23 +508,54 @@ server <- function(input, output, session) {
         return(as.data.table(df))
     }
 
+    # ── .gs4_auth_auto ────────────────────────────────────────────────────────
+    # Authenticates with Google Sheets using the service account JSON bundled
+    # alongside app.R (gitignored, uploaded to shinyapps.io with the app).
+    # Falls back to interactive OAuth if the file is absent (dev machines that
+    # haven't downloaded the key yet).
+    .GS4_KEY_PATH <- "taxotox-service.json"
+    .gs4_auth_auto <- function() {
+        if (file.exists(.GS4_KEY_PATH)) {
+            googlesheets4::gs4_auth(path = .GS4_KEY_PATH)
+        } else {
+            googlesheets4::gs4_auth()   # interactive OAuth — browser prompt
+        }
+    }
+
     # ── append_to_temp_cas ────────────────────────────────────────────────────
-    # Persists newly confirmed PREFERRED_NAME / CASRN pairs to a session-level
-    # temporary FST file (temp_CAS.fst). This file accumulates user-confirmed
-    # fuzzy matches and manual entries across a session and can be reviewed by
-    # administrators to expand the Known_CAS database over time.
+    # Appends newly confirmed PREFERRED_NAME / CASRN pairs to the temp_CAS log.
+    # When TAXOTOX_SHEET_ID env var is set (deployed), writes to Google Sheets so
+    # data persists across server restarts. Otherwise writes to a local FST file
+    # (development / offline runs).
     append_to_temp_cas <- function(new_data) {
-        temp_cas_path <- "Data/temp_CAS.fst"
         if (!all(c("PREFERRED_NAME", "CASRN") %in% names(new_data)))
             stop("New data must contain PREFERRED_NAME and CASRN columns.")
-        temp_cas_dt <- if (file.exists(temp_cas_path)) {
-            read.fst(temp_cas_path, as.data.table = TRUE)
+        new_data <- new_data %>%
+            mutate(CASRN = gsub("-", "", trimws(CASRN))) %>%
+            select(PREFERRED_NAME, CASRN)
+
+        sheet_id <- Sys.getenv("TAXOTOX_SHEET_ID", unset = TAXOTOX_SHEET_ID)
+
+        if (nzchar(sheet_id)) {
+            tryCatch({
+                library(googlesheets4)
+                .gs4_auth_auto()
+                googlesheets4::sheet_append(ss = sheet_id, data = new_data)
+            }, error = function(e) {
+                warning("Google Sheets write failed — compound not logged: ", conditionMessage(e))
+            })
         } else {
-            data.table(PREFERRED_NAME = character(), CASRN = character())
+            temp_cas_path <- "../Data/temp_CAS.fst"
+            temp_cas_dt <- if (file.exists(temp_cas_path)) {
+                read.fst(temp_cas_path, as.data.table = TRUE)
+            } else {
+                data.table(PREFERRED_NAME = character(), CASRN = character())
+            }
+            updated_dt <- rbindlist(list(temp_cas_dt, as.data.table(new_data)),
+                                    use.names = TRUE, fill = TRUE)
+            updated_dt <- unique(updated_dt, by = c("PREFERRED_NAME", "CASRN"))
+            write.fst(updated_dt, temp_cas_path)
         }
-        updated_dt <- rbindlist(list(temp_cas_dt, new_data), use.names = TRUE, fill = TRUE)
-        updated_dt <- unique(updated_dt, by = c("PREFERRED_NAME", "CASRN"))
-        write.fst(updated_dt, temp_cas_path)
     }
 
     # ── pubchem_lookup ────────────────────────────────────────────────────────
@@ -806,6 +959,35 @@ server <- function(input, output, session) {
     # ── CASRN Matching tab: search log ────────────────────────────────────────
     output$cas_search_summary <- renderPrint({ cat(v$summary_log, sep = "\n") })
 
+    # ── Duplicate CASRN warning ───────────────────────────────────────────────
+    # If two input compound names resolved to the same CASRN, their TUs will be
+    # summed independently — effectively double-counting. Warn the user.
+    output$duplicate_casrn_warning <- renderUI({
+        req(nrow(v$final_search_results) > 0)
+        dupes <- v$final_search_results %>%
+            as.data.frame() %>%
+            mutate(cas_nodash = gsub("-", "", CASRN)) %>%
+            group_by(cas_nodash) %>%
+            filter(n() > 1, nzchar(cas_nodash)) %>%
+            arrange(cas_nodash)
+        if (nrow(dupes) == 0) return(NULL)
+        rows <- dupes %>%
+            group_by(cas_nodash) %>%
+            summarise(names = paste(PREFERRED_NAME, collapse = " / "),
+                      casrn = first(CASRN), .groups = "drop")
+        items <- lapply(seq_len(nrow(rows)), function(i)
+            tags$li(sprintf('"%s" — both map to CASRN %s. Concentrations will be counted separately.',
+                            rows$names[i], rows$casrn[i]))
+        )
+        tags$div(
+            style = "background:#fff3cd; border:1px solid #ffc107; border-radius:4px; padding:8px 12px; margin-bottom:10px;",
+            tags$strong("\u26a0 Duplicate CASRNs detected:"),
+            tags$ul(style = "margin:6px 0 0 0;", items),
+            tags$p(style = "margin:6px 0 0 0; font-size:0.88em;",
+                   "If these are synonyms for the same compound, remove one from your input file before calculating.")
+        )
+    })
+
     # ── CASRN Matching tab: unified compound review table ────────────────────
     # Renders ALL compounds in a single DataTable, ordered so the ones needing
     # the most user attention appear first:
@@ -927,7 +1109,7 @@ server <- function(input, output, session) {
             if (src == "Manual") {
                 # CASRN comes from the editable text input.
                 raw_val  <- input[[paste0("casrn_input_", i)]]
-                casrn_val <- trimws(if (is.null(raw_val)) "" else raw_val)
+                casrn_val <- gsub("-", "", trimws(if (is.null(raw_val)) "" else raw_val))
                 if (checked && nchar(casrn_val) > 0) {
                     confirmed <- rbindlist(list(confirmed,
                         data.table(PREFERRED_NAME = df$source_name[i],
@@ -984,7 +1166,7 @@ server <- function(input, output, session) {
     observeEvent(input$add_manual_casrn, {
         req(input$manual_name, input$manual_casrn)
         name  <- trimws(input$manual_name)
-        casrn <- trimws(input$manual_casrn)
+        casrn <- gsub("-", "", trimws(input$manual_casrn))
         if (name != "" && casrn != "") {
             new_entry              <- data.table(PREFERRED_NAME = name, CASRN = casrn)
             v$final_search_results <- rbind(v$final_search_results, new_entry)
@@ -1025,61 +1207,45 @@ server <- function(input, output, session) {
 
             cas_search_list <- as.vector(p_final$cas_number)
 
-            # ── Subset ECOTOX to matched compounds ───────────────────────────
-            setProgress(0.10, detail = "Filtering ECOTOX data...")
-            endpoint_data <- final_ecotox_data %>%
-                mutate(cas_number = as.character(as.integer64(cas_number))) %>%
-                filter(cas_number %in% cas_search_list)
+            # ── Lookup denominators from reference table ──────────────────────
+            # taxotox_reference has one row per (cas_number × ecotox_group).
+            # Denominator priority: median_lc50_ng_L (ECOTOX) → predicted_lc50_ng_L (CompTox).
+            setProgress(0.10, detail = "Looking up toxicity denominators...")
+            ref_matched <- taxotox_reference %>%
+                filter(cas_number %in% cas_search_list) %>%
+                mutate(
+                    median_conc  = dplyr::coalesce(median_lc50_ng_L, predicted_lc50_ng_L),
+                    gap_fill     = is.na(median_lc50_ng_L) & !is.na(predicted_lc50_ng_L)
+                ) %>%
+                filter(!is.na(median_conc)) %>%
+                left_join(p_final, by = "cas_number") %>%
+                filter(!is.na(PREFERRED_NAME)) %>%
+                select(PREFERRED_NAME, cas_number, ecotox_group, median_conc, gap_fill)
+
+            # Names that used CompTox predicted LC50 (any group) — flagged with "~" in tables
+            gap_fill_names <- ref_matched %>%
+                filter(gap_fill) %>%
+                distinct(PREFERRED_NAME) %>%
+                pull(PREFERRED_NAME)
 
             # ── Per-group TU / PTI calculation ───────────────────────────────
+            .calc_tox <- function(grp, progress_val, progress_label) {
+                setProgress(progress_val, detail = progress_label)
+                denom <- ref_matched %>%
+                    filter(ecotox_group == grp) %>%
+                    select(PREFERRED_NAME, median_conc)
+                denom %>%
+                    left_join(v$user_data, by = "PREFERRED_NAME") %>%
+                    mutate(across(where(is.numeric) & !median_conc, ~ .x / median_conc)) %>%
+                    select(-median_conc) %>%
+                    pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
+                    pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
+                    mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
+            }
 
-            # Algae ────────────────────────────────────────────────────────────
-            setProgress(0.25, detail = "Algae: computing TUs...")
-            endpoint_data_algae <- endpoint_data %>%
-                filter(ecotox_group == "algae") %>%
-                left_join(p_final, by = "cas_number", relationship = "many-to-many") %>%
-                group_by(PREFERRED_NAME, cas_number) %>%
-                summarise(median_conc = median(conc_ng_L, na.rm = TRUE), .groups = "drop")
-
-            tox_cal_algae <- endpoint_data_algae %>%
-                left_join(v$user_data, by = "PREFERRED_NAME") %>%
-                mutate(across(where(is.numeric) & !c(cas_number, median_conc), ~ .x / median_conc)) %>%
-                select(-c(cas_number, median_conc)) %>%
-                pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
-                pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
-                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
-
-            # Crustacean ───────────────────────────────────────────────────────
-            setProgress(0.45, detail = "Crustacean: computing TUs...")
-            endpoint_data_crustacean <- endpoint_data %>%
-                filter(ecotox_group == "crustacean") %>%
-                left_join(p_final, by = "cas_number", relationship = "many-to-many") %>%
-                group_by(PREFERRED_NAME, cas_number) %>%
-                summarise(median_conc = median(conc_ng_L, na.rm = TRUE), .groups = "drop")
-
-            tox_cal_crustacean <- endpoint_data_crustacean %>%
-                left_join(v$user_data, by = "PREFERRED_NAME") %>%
-                mutate(across(where(is.numeric) & !c(cas_number, median_conc), ~ .x / median_conc)) %>%
-                select(-c(cas_number, median_conc)) %>%
-                pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
-                pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
-                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
-
-            # Fish ─────────────────────────────────────────────────────────────
-            setProgress(0.65, detail = "Fish: computing TUs...")
-            endpoint_data_fish <- endpoint_data %>%
-                filter(ecotox_group == "fish") %>%
-                left_join(p_final, by = "cas_number", relationship = "many-to-many") %>%
-                group_by(PREFERRED_NAME, cas_number) %>%
-                summarise(median_conc = median(conc_ng_L, na.rm = TRUE), .groups = "drop")
-
-            tox_cal_fish <- endpoint_data_fish %>%
-                left_join(v$user_data, by = "PREFERRED_NAME") %>%
-                mutate(across(where(is.numeric) & !c(cas_number, median_conc), ~ .x / median_conc)) %>%
-                select(-c(cas_number, median_conc)) %>%
-                pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
-                pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
-                mutate(RQtg = rowSums(across(where(is.numeric)), na.rm = TRUE))
+            tox_cal_algae      <- .calc_tox("algae",      0.25, "Algae: computing TUs...")
+            tox_cal_crustacean <- .calc_tox("crustacean", 0.45, "Crustacean: computing TUs...")
+            tox_cal_fish       <- .calc_tox("fish",       0.65, "Fish: computing TUs...")
 
             # ── Rename RQtg for display and reorder columns ──────────────────
             setProgress(0.82, detail = "Formatting results...")
@@ -1104,6 +1270,232 @@ server <- function(input, output, session) {
                 crustacean_pollutants = make_pollutant_plot(tox_cal_crustacean,   "Crustacean"),
                 fish_pollutants       = make_pollutant_plot(tox_cal_fish,         "Fish")
             )
+
+            # ── A-9: HC5-based TU/PTI ────────────────────────────────────────
+            # Uses hc5_ssd_ng_L preferentially; falls back to hc5_model_ng_L.
+            # Runs only when the HC5 method is selected in the Advanced panel.
+            if (input$method_hc5) {
+                setProgress(0.86, detail = "HC5: computing TUs...")
+
+                ref_hc5 <- taxotox_reference %>%
+                    filter(cas_number %in% cas_search_list) %>%
+                    mutate(
+                        hc5_denom = dplyr::coalesce(hc5_ssd_ng_L, hc5_model_ng_L),
+                        hc5_method_used = dplyr::case_when(
+                            !is.na(hc5_ssd_ng_L)   ~ paste0(hc5_method, " (SSD)"),
+                            !is.na(hc5_model_ng_L)  ~ paste0(hc5_method, " (Scaled)"),
+                            TRUE                    ~ NA_character_
+                        )
+                    ) %>%
+                    filter(!is.na(hc5_denom)) %>%
+                    left_join(p_final, by = "cas_number") %>%
+                    filter(!is.na(PREFERRED_NAME)) %>%
+                    select(PREFERRED_NAME, ecotox_group, hc5_denom)
+
+                .calc_hc5 <- function(grp) {
+                    denom <- ref_hc5 %>%
+                        filter(ecotox_group == grp) %>%
+                        select(PREFERRED_NAME, hc5_denom)
+                    denom %>%
+                        left_join(v$user_data, by = "PREFERRED_NAME") %>%
+                        mutate(across(where(is.numeric) & !hc5_denom, ~ .x / hc5_denom)) %>%
+                        select(-hc5_denom) %>%
+                        pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
+                        pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
+                        mutate(PTI = rowSums(across(where(is.numeric)), na.rm = TRUE)) %>%
+                        select(Sample, PTI, everything())
+                }
+
+                v$hc5_results <- list(
+                    "HC5 Algae"      = .calc_hc5("algae"),
+                    "HC5 Crustacean" = .calc_hc5("crustacean"),
+                    "HC5 Fish"       = .calc_hc5("fish")
+                )
+            } else {
+                v$hc5_results <- NULL
+            }
+
+            # ── A-10: Benchmark Hazard Index ──────────────────────────────────
+            # HQ_i = C_i / benchmark_i;  HI = sum(HQ_i)
+            # One sheet per selected framework; no taxonomic grouping.
+            if (input$method_benchmark) {
+                setProgress(0.88, detail = "Benchmark HI: computing...")
+
+                # Helper: compute one HI sheet given a named benchmark column
+                # filtered to a specific ecotox_group (or all groups if grp = NULL)
+                .calc_hi <- function(col, grp = NULL) {
+                    ref_bm <- taxotox_reference %>%
+                        filter(cas_number %in% cas_search_list,
+                               !is.na(.data[[col]]))
+                    if (!is.null(grp))
+                        ref_bm <- ref_bm %>% filter(ecotox_group == grp)
+                    denom <- ref_bm %>%
+                        group_by(cas_number) %>% slice(1) %>% ungroup() %>%
+                        left_join(p_final, by = "cas_number") %>%
+                        filter(!is.na(PREFERRED_NAME)) %>%
+                        select(PREFERRED_NAME, bm_val = !!sym(col))
+                    if (nrow(denom) == 0) return(NULL)
+                    denom %>%
+                        left_join(v$user_data, by = "PREFERRED_NAME") %>%
+                        mutate(across(where(is.numeric) & !bm_val, ~ .x / bm_val)) %>%
+                        select(-bm_val) %>%
+                        pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "HQ") %>%
+                        pivot_wider(names_from = PREFERRED_NAME, values_from = HQ) %>%
+                        mutate(HI = rowSums(across(where(is.numeric)), na.rm = TRUE)) %>%
+                        select(Sample, HI, everything())
+                }
+
+                bm_results <- list()
+
+                # US EPA — three group-specific sheets using acute columns
+                if (input$bm_usepa) {
+                    usepa_groups <- list(
+                        list(grp = "fish",       col = "benchmark_usepa_fish_acute_ng_L",  label = "Benchmark HI - US EPA (Fish)"),
+                        list(grp = "crustacean", col = "benchmark_usepa_crust_acute_ng_L", label = "Benchmark HI - US EPA (Crustacean)"),
+                        list(grp = "algae",      col = "benchmark_usepa_algae_acute_ng_L", label = "Benchmark HI - US EPA (Algae)")
+                    )
+                    for (g in usepa_groups) {
+                        if (!g$col %in% names(taxotox_reference)) next
+                        df <- .calc_hi(g$col, g$grp)
+                        if (!is.null(df)) bm_results[[g$label]] <- df
+                    }
+                }
+
+                # Other frameworks — single sheet each (no group-specific columns)
+                other_bm <- list(
+                    list(flag = input$bm_eu,   col = "benchmark_eu_eqs_aa_marine_ng_L", label = "Benchmark HI - EU EQS"),
+                    list(flag = input$bm_anzg, col = "benchmark_au_anzg_marine_ng_L",   label = "Benchmark HI - AU ANZG"),
+                    list(flag = input$bm_ccme, col = "benchmark_ca_ccme_fresh_lt_ng_L", label = "Benchmark HI - CA CCME")
+                )
+                for (bm in other_bm) {
+                    if (!bm$flag) next
+                    if (!bm$col %in% names(taxotox_reference)) next
+                    df <- .calc_hi(bm$col, NULL)
+                    if (!is.null(df)) bm_results[[bm$label]] <- df
+                }
+
+                v$benchmark_results <- if (length(bm_results) > 0) bm_results else NULL
+            } else {
+                v$benchmark_results <- NULL
+            }
+
+            # ── A-11: Independent Action (IA, Hill slope n=1) ────────────────
+            # E_i = C_i / (LC50_i + C_i)
+            # E_mix = 1 - prod(1 - E_i)   [per sample, per taxonomic group]
+            # Denominator: same coalesce priority as standard TU
+            if (input$method_ia) {
+                setProgress(0.91, detail = "IA: computing...")
+
+                .calc_ia <- function(grp) {
+                    denom <- ref_matched %>%
+                        filter(ecotox_group == grp) %>%
+                        select(PREFERRED_NAME, median_conc)
+                    if (nrow(denom) == 0) return(NULL)
+
+                    # Join concentrations, compute E_i per compound per sample
+                    conc_long <- denom %>%
+                        left_join(v$user_data, by = "PREFERRED_NAME") %>%
+                        pivot_longer(cols      = -c(PREFERRED_NAME, median_conc),
+                                     names_to  = "Sample",
+                                     values_to = "C") %>%
+                        mutate(E_i = C / (median_conc + C),
+                               E_i = if_else(is.na(E_i) | is.nan(E_i), 0, E_i))
+
+                    # E_mix per sample = 1 - prod(1 - E_i)
+                    e_mix <- conc_long %>%
+                        group_by(Sample) %>%
+                        summarise(E_mix = 1 - prod(1 - E_i), .groups = "drop")
+
+                    # Per-compound E_i wide for inspection
+                    e_wide <- conc_long %>%
+                        select(PREFERRED_NAME, Sample, E_i) %>%
+                        pivot_wider(names_from = PREFERRED_NAME, values_from = E_i)
+
+                    left_join(e_mix, e_wide, by = "Sample") %>%
+                        select(Sample, E_mix, everything())
+                }
+
+                ia_algae      <- .calc_ia("algae")
+                ia_crustacean <- .calc_ia("crustacean")
+                ia_fish       <- .calc_ia("fish")
+
+                v$ia_results <- Filter(Negate(is.null), list(
+                    "IA Algae"      = ia_algae,
+                    "IA Crustacean" = ia_crustacean,
+                    "IA Fish"       = ia_fish
+                ))
+                if (length(v$ia_results) == 0) v$ia_results <- NULL
+            } else {
+                v$ia_results <- NULL
+            }
+
+            # ── A-12: CAMA ───────────────────────────────────────────────────
+            # Step 1: within each MoA group → CA → group_TU = Σ(C_i / LC50_i)
+            # Step 2: group fractional effect: E_group = group_TU / (1 + group_TU)
+            # Step 3: between groups → IA: E_mix = 1 − ∏(1 − E_group)
+            # One sheet; rows = samples; columns: E_mix, then one E_group per MoA group.
+            if (input$method_cama) {
+                setProgress(0.94, detail = "CAMA: computing...")
+
+                # Join moa_group onto ref_matched (already filtered to matched compounds)
+                ref_cama <- ref_matched %>%
+                    left_join(
+                        taxotox_reference %>%
+                            select(cas_number, ecotox_group, moa_group) %>%
+                            mutate(moa_group = if_else(is.na(moa_group) | moa_group == "",
+                                                       "narcosis", moa_group)),
+                        by = c("cas_number", "ecotox_group")
+                    )
+
+                .calc_cama <- function(grp) {
+                    d <- ref_cama %>% filter(ecotox_group == grp)
+                    if (nrow(d) == 0) return(NULL)
+
+                    # Long format: one row per compound × sample
+                    conc_long <- d %>%
+                        select(PREFERRED_NAME, moa_group, median_conc) %>%
+                        left_join(v$user_data, by = "PREFERRED_NAME") %>%
+                        pivot_longer(cols      = -c(PREFERRED_NAME, moa_group, median_conc),
+                                     names_to  = "Sample",
+                                     values_to = "C") %>%
+                        mutate(TU = if_else(is.na(C) | is.na(median_conc), 0,
+                                            C / median_conc))
+
+                    # Step 1+2: group_TU and E_group per MoA × sample
+                    e_group <- conc_long %>%
+                        group_by(Sample, moa_group) %>%
+                        summarise(group_TU = sum(TU, na.rm = TRUE), .groups = "drop") %>%
+                        mutate(E_group = group_TU / (1 + group_TU))
+
+                    # Step 3: E_mix per sample
+                    e_mix <- e_group %>%
+                        group_by(Sample) %>%
+                        summarise(E_mix = 1 - prod(1 - E_group), .groups = "drop")
+
+                    # Spread E_group per MoA group as additional columns
+                    e_wide <- e_group %>%
+                        select(Sample, moa_group, E_group) %>%
+                        pivot_wider(names_from  = moa_group,
+                                    values_from = E_group,
+                                    names_prefix = "E_")
+
+                    left_join(e_mix, e_wide, by = "Sample") %>%
+                        select(Sample, E_mix, everything())
+                }
+
+                cama_algae      <- .calc_cama("algae")
+                cama_crustacean <- .calc_cama("crustacean")
+                cama_fish       <- .calc_cama("fish")
+
+                v$cama_results <- Filter(Negate(is.null), list(
+                    "CAMA Algae"      = cama_algae,
+                    "CAMA Crustacean" = cama_crustacean,
+                    "CAMA Fish"       = cama_fish
+                ))
+                if (length(v$cama_results) == 0) v$cama_results <- NULL
+            } else {
+                v$cama_results <- NULL
+            }
 
             setProgress(1.0, detail = "Done.")
             v$summary_log <- c(v$summary_log, "Toxicity calculations complete. See tabs for results.")
@@ -1175,12 +1567,9 @@ server <- function(input, output, session) {
     #   "Toxicity Coverage"   — which taxonomic groups have ECOTOX data for
     #                           each compound (colour-coded: green = data
     #                           available, red = no data).
-    output$download_results <- downloadHandler(
-        filename = function() {
-            paste0("taxotox_", tools::file_path_sans_ext(input$user_file$name), ".xlsx")
-        },
-        content = function(file) {
-            req(v$tox_results)
+    # ── Helper: build basic Excel workbook ───────────────────────────────────────
+    .build_basic_wb <- function() {
+        req(v$tox_results)
 
             # ── CASRN report ─────────────────────────────────────────────────
             casrn_report <- as.data.frame(v$final_search_results)[, c("PREFERRED_NAME", "CASRN")]
@@ -1200,28 +1589,37 @@ server <- function(input, output, session) {
                 mutate(cas_number = gsub("-", "", CASRN)) %>%
                 distinct(PREFERRED_NAME, .keep_all = TRUE)
 
-            ecotox_algae      <- unique(final_ecotox_data$cas_number[final_ecotox_data$ecotox_group == "algae"])
-            ecotox_crustacean <- unique(final_ecotox_data$cas_number[final_ecotox_data$ecotox_group == "crustacean"])
-            ecotox_fish       <- unique(final_ecotox_data$cas_number[final_ecotox_data$ecotox_group == "fish"])
+            # 3-state coverage: "ecotox" / "predicted" / "none"
+            .cov_state <- function(grp) {
+                has_ecotox    <- taxotox_reference$cas_number[taxotox_reference$ecotox_group == grp & !is.na(taxotox_reference$median_lc50_ng_L)]
+                has_predicted <- taxotox_reference$cas_number[taxotox_reference$ecotox_group == grp & is.na(taxotox_reference$median_lc50_ng_L) & !is.na(taxotox_reference$predicted_lc50_ng_L)]
+                function(cas) ifelse(cas %in% has_ecotox, "ecotox",
+                                     ifelse(cas %in% has_predicted, "predicted", "none"))
+            }
+            cov_algae      <- .cov_state("algae")
+            cov_crustacean <- .cov_state("crustacean")
+            cov_fish       <- .cov_state("fish")
 
             coverage <- p_final_rep %>%
-                mutate(Algae      = cas_number %in% ecotox_algae,
-                       Crustacean = cas_number %in% ecotox_crustacean,
-                       Fish       = cas_number %in% ecotox_fish) %>%
+                mutate(Algae      = cov_algae(cas_number),
+                       Crustacean = cov_crustacean(cas_number),
+                       Fish       = cov_fish(cas_number)) %>%
                 select(Compound = PREFERRED_NAME, Algae, Crustacean, Fish)
 
             if (!is.null(v$manual_to_fill) && nrow(v$manual_to_fill) > 0) {
                 coverage <- rbind(coverage,
                     data.frame(Compound   = v$manual_to_fill$PREFERRED_NAME,
-                               Algae      = FALSE, Crustacean = FALSE, Fish = FALSE,
+                               Algae      = "none", Crustacean = "none", Fish = "none",
                                stringsAsFactors = FALSE))
             }
 
-            # Replace logical with tick/cross symbols for readability
+            # Replace state codes with display symbols
             coverage_display <- coverage %>%
-                mutate(Algae      = ifelse(Algae,      "\u2713", "\u2717"),
-                       Crustacean = ifelse(Crustacean, "\u2713", "\u2717"),
-                       Fish       = ifelse(Fish,       "\u2713", "\u2717"))
+                mutate(across(c(Algae, Crustacean, Fish), ~ case_when(
+                    .x == "ecotox"    ~ "\u2713",
+                    .x == "predicted" ~ "~",
+                    TRUE              ~ "\u2717"
+                )))
 
             # ── Build workbook ────────────────────────────────────────────────
             wb <- createWorkbook()
@@ -1269,39 +1667,39 @@ server <- function(input, output, session) {
             addWorksheet(wb, "CASRN Report")
             writeData(wb, "CASRN Report", casrn_report)
             # ── Coverage summary rows ─────────────────────────────────────────
-            n_found     <- colSums(coverage[, c("Algae", "Crustacean", "Fish")])
-            n_total     <- nrow(coverage)
-            n_not_found <- n_total - n_found
-            pct_found   <- round(100 * n_found / n_total, 1)
+            cov_cols  <- coverage[, c("Algae", "Crustacean", "Fish")]
+            n_total   <- nrow(coverage)
+            n_ecotox  <- sapply(cov_cols, function(x) sum(x == "ecotox"))
+            n_pred    <- sapply(cov_cols, function(x) sum(x == "predicted"))
+            n_none    <- sapply(cov_cols, function(x) sum(x == "none"))
+            pct_any   <- round(100 * (n_ecotox + n_pred) / n_total, 1)
 
             coverage_summary <- data.frame(
-                Metric     = c("Pollutants found in ECOTOX",
-                               "Pollutants not found in ECOTOX",
-                               "% found in ECOTOX"),
-                Algae      = c(n_found["Algae"],      n_not_found["Algae"],      pct_found["Algae"]),
-                Crustacean = c(n_found["Crustacean"],  n_not_found["Crustacean"],  pct_found["Crustacean"]),
-                Fish       = c(n_found["Fish"],        n_not_found["Fish"],        pct_found["Fish"]),
+                Metric     = c("ECOTOX data (\u2713)",
+                               "Predicted LC50 (~)",
+                               "No data (\u2717)",
+                               "% with any LC50"),
+                Algae      = c(n_ecotox["Algae"],      n_pred["Algae"],      n_none["Algae"],      pct_any["Algae"]),
+                Crustacean = c(n_ecotox["Crustacean"], n_pred["Crustacean"], n_none["Crustacean"], pct_any["Crustacean"]),
+                Fish       = c(n_ecotox["Fish"],       n_pred["Fish"],       n_none["Fish"],       pct_any["Fish"]),
                 stringsAsFactors = FALSE, row.names = NULL
             )
 
-            # coverage_display is written starting at row 6
-            # (3 summary rows + 1 header + 1 blank = rows 1-5 used above)
-            COVERAGE_DATA_START_ROW <- 6L
+            # coverage_display is written starting at row 7
+            # (4 summary rows + 1 header + 1 blank = rows 1-6 used above)
+            COVERAGE_DATA_START_ROW <- 7L
 
             addWorksheet(wb, "Toxicity Coverage")
             writeData(wb, "Toxicity Coverage", coverage_summary, startRow = 1)
             writeData(wb, "Toxicity Coverage", coverage_display, startRow = COVERAGE_DATA_START_ROW)
 
-            # Conditional formatting: green = ECOTOX data present, red = absent
-            # Batched per column (two addStyle calls per column instead of one per cell)
+            # Conditional formatting: green = ecotox or predicted, red = none
             green_style <- createStyle(fgFill = "#C6EFCE", halign = "CENTER", fontColour = "#276221")
             red_style   <- createStyle(fgFill = "#FFC7CE", halign = "CENTER", fontColour = "#9C0006")
             for (col_idx in 2:4) {
-                col_name   <- names(coverage)[col_idx]
-                vals       <- coverage[[col_name]]
-                # +1 for coverage_display header row, then offset to where it actually starts
-                green_rows <- which(vals == TRUE)  + COVERAGE_DATA_START_ROW
-                red_rows   <- which(vals != TRUE)  + COVERAGE_DATA_START_ROW
+                vals       <- coverage[[names(coverage)[col_idx]]]
+                green_rows <- which(vals %in% c("ecotox", "predicted")) + COVERAGE_DATA_START_ROW
+                red_rows   <- which(vals == "none")                     + COVERAGE_DATA_START_ROW
                 if (length(green_rows) > 0)
                     addStyle(wb, "Toxicity Coverage", green_style,
                              rows = green_rows, cols = col_idx, stack = FALSE)
@@ -1309,7 +1707,153 @@ server <- function(input, output, session) {
                     addStyle(wb, "Toxicity Coverage", red_style,
                              rows = red_rows,  cols = col_idx, stack = FALSE)
             }
-            saveWorkbook(wb, file, overwrite = TRUE)
+
+            # ── Color legend below coverage table ─────────────────────────────
+            legend_start_row <- COVERAGE_DATA_START_ROW + 1L + nrow(coverage_display) + 2L
+
+            color_legend <- data.frame(
+                Symbol  = c("\u2713", "~", "\u2717"),
+                Meaning = c(
+                    "ECOTOX data — median LC50/EC50 from the ECOTOX Knowledgebase used as TU denominator",
+                    "Predicted LC50 — CompTox/OPERA model prediction used as gap-fill; treat results with lower confidence",
+                    "No data — compound excluded from toxicity calculation for this taxonomic group"
+                ),
+                stringsAsFactors = FALSE
+            )
+            writeData(wb, "Toxicity Coverage", color_legend, startRow = legend_start_row)
+            addStyle(wb, "Toxicity Coverage", green_style,
+                     rows = legend_start_row + 1L, cols = 1L, stack = FALSE)
+            addStyle(wb, "Toxicity Coverage", green_style,
+                     rows = legend_start_row + 2L, cols = 1L, stack = FALSE)
+            addStyle(wb, "Toxicity Coverage", red_style,
+                     rows = legend_start_row + 3L, cols = 1L, stack = FALSE)
+            setColWidths(wb, "Toxicity Coverage", cols = 1, widths = 20)
+            setColWidths(wb, "Toxicity Coverage", cols = 2:4, widths = 15)
+            setColWidths(wb, "Toxicity Coverage", cols = 2, widths = 90)
+
+        wb
+    }
+
+    # ── Helper: build advanced Excel workbook ────────────────────────────────────
+    .build_advanced_wb <- function() {
+        wb <- createWorkbook()
+
+        # ── HC5 sheets ───────────────────────────────────────────────────────────
+        if (input$method_hc5) {
+            if (!is.null(v$hc5_results) && length(v$hc5_results) > 0) {
+                for (sname in names(v$hc5_results)) {
+                    addWorksheet(wb, sname)
+                    writeData(wb, sname, v$hc5_results[[sname]])
+                }
+            } else {
+                addWorksheet(wb, "HC5 - No Data")
+                writeData(wb, "HC5 - No Data", data.frame(
+                    Note = "No HC5 values were available for any of the uploaded compounds. HC5 requires either ECOTOX SSD data (n \u2265 5) or a predicted LC50 for scaling.",
+                    stringsAsFactors = FALSE
+                ))
+                setColWidths(wb, "HC5 - No Data", cols = 1, widths = 100)
+            }
+        }
+
+        # ── Benchmark HI sheets ──────────────────────────────────────────────────
+        if (input$method_benchmark) {
+            if (!is.null(v$benchmark_results) && length(v$benchmark_results) > 0) {
+                for (sname in names(v$benchmark_results)) {
+                    addWorksheet(wb, sname)
+                    writeData(wb, sname, v$benchmark_results[[sname]])
+                }
+            } else {
+                addWorksheet(wb, "Benchmark HI - No Data")
+                writeData(wb, "Benchmark HI - No Data", data.frame(
+                    Note = paste0(
+                        "No benchmark values were found for any of the uploaded compounds. ",
+                        "The selected benchmark framework(s) do not cover the compounds in this dataset. ",
+                        "Benchmark coverage is typically highest for legacy pesticides and priority substances; ",
+                        "emerging contaminants are often not listed."
+                    ),
+                    stringsAsFactors = FALSE
+                ))
+                setColWidths(wb, "Benchmark HI - No Data", cols = 1, widths = 100)
+            }
+        }
+
+        # ── IA sheets ────────────────────────────────────────────────────────────
+        if (input$method_ia) {
+            if (!is.null(v$ia_results) && length(v$ia_results) > 0) {
+                for (sname in names(v$ia_results)) {
+                    addWorksheet(wb, sname)
+                    writeData(wb, sname, v$ia_results[[sname]])
+                }
+            } else {
+                addWorksheet(wb, "IA - No Data")
+                writeData(wb, "IA - No Data", data.frame(
+                    Note = "No compounds with LC50 data were found for Independent Action calculation. IA requires at least one compound with a valid LC50 denominator.",
+                    stringsAsFactors = FALSE
+                ))
+                setColWidths(wb, "IA - No Data", cols = 1, widths = 100)
+            }
+        }
+
+        # ── CAMA sheets ──────────────────────────────────────────────────────────
+        if (input$method_cama) {
+            if (!is.null(v$cama_results) && length(v$cama_results) > 0) {
+                for (sname in names(v$cama_results)) {
+                    addWorksheet(wb, sname)
+                    writeData(wb, sname, v$cama_results[[sname]])
+                }
+            } else {
+                addWorksheet(wb, "CAMA - No Data")
+                writeData(wb, "CAMA - No Data", data.frame(
+                    Note = "No compounds with MoA group assignments were found. CAMA requires LC50 data and Mode-of-Action classification from the reference table.",
+                    stringsAsFactors = FALSE
+                ))
+                setColWidths(wb, "CAMA - No Data", cols = 1, widths = 100)
+            }
+        }
+
+        wb
+    }
+
+    # ── Download handler ─────────────────────────────────────────────────────────
+    output$download_results <- downloadHandler(
+        filename = function() {
+            base <- tools::file_path_sans_ext(input$user_file$name)
+            if (any_advanced()) paste0("taxotox_", base, ".zip")
+            else                paste0("taxotox_", base, ".xlsx")
+        },
+        content = function(file) {
+            req(v$tox_results)
+            base_wb <- .build_basic_wb()
+
+            if (any_advanced()) {
+                # Write both workbooks to a temp dir and ZIP them
+                tmp_dir   <- tempdir()
+                base_name <- tools::file_path_sans_ext(input$user_file$name)
+                basic_path    <- file.path(tmp_dir, paste0("taxotox_basic_",    base_name, ".xlsx"))
+                advanced_path <- file.path(tmp_dir, paste0("taxotox_advanced_", base_name, ".xlsx"))
+
+                saveWorkbook(base_wb, basic_path, overwrite = TRUE)
+
+                adv_wb <- .build_advanced_wb()
+                if (length(adv_wb$sheet_names) > 0) {
+                    saveWorkbook(adv_wb, advanced_path, overwrite = TRUE)
+                    zip(file, files = c(basic_path, advanced_path), flags = "-j")
+                } else {
+                    # No advanced sheets produced — none of the selected methods had
+                    # any compound coverage. Alert the user and fall back to basic only.
+                    showNotification(
+                        paste0("\u26a0 No advanced results produced: none of the selected ",
+                               "methods (HC5 / Benchmark HI / IA / CAMA) found matching ",
+                               "denominators for your compounds. Only the basic results ",
+                               "file has been downloaded."),
+                        type     = "warning",
+                        duration = 12
+                    )
+                    saveWorkbook(base_wb, file, overwrite = TRUE)
+                }
+            } else {
+                saveWorkbook(base_wb, file, overwrite = TRUE)
+            }
         }
     )
 
