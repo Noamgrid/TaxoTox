@@ -306,6 +306,13 @@ ui <- fluidPage(
                         ),
 
                tabPanel("Toxicity Plots",
+                        div(style = "background:#fff8e1; border-left:4px solid #f9a825; padding:10px 14px; margin-bottom:14px; font-size:0.92em; color:#555;",
+                            strong("Disclaimer: "),
+                            "TaxoTox is a research screening tool. Outputs are indicative only and should not be used as the sole basis for regulatory decisions or risk management actions. ",
+                            "Predicted LC50 values (marked \u007e) carry additional uncertainty. ",
+                            "Benchmark values reflect the listed jurisdiction and may not apply to all study contexts. ",
+                            "Results depend on the ECOTOX database version installed."
+                        ),
                         h4("Top 10 Riskiest Samples (by PTI)"),
                         plotOutput("algae_sample_plot"),
                         plotOutput("crustacean_sample_plot"),
@@ -1633,7 +1640,9 @@ server <- function(input, output, session) {
                     "",
                     "PTI \u2265 1.0",
                     "PTI 0.1 \u2013 1.0",
-                    "PTI < 0.1"
+                    "PTI < 0.1",
+                    "",
+                    "DISCLAIMER"
                 ),
                 Description = c(
                     "TU_ij = C_ij (ng/L) / median LC50_i (ng/L)   [compound i, sample j, per taxonomic group]",
@@ -1641,7 +1650,9 @@ server <- function(input, output, session) {
                     "",
                     "Acute risk \u2014 mixture may cause lethal or immobilisation effects on sensitive species",
                     "Chronic risk \u2014 sub-lethal effects on sensitive species possible",
-                    "Low risk \u2014 mixture unlikely to cause measurable toxicity"
+                    "Low risk \u2014 mixture unlikely to cause measurable toxicity",
+                    "",
+                    "TaxoTox is a research screening tool. Outputs are indicative only and should not be used as the sole basis for regulatory decisions or risk management actions. Predicted LC50 values (marked ~) carry additional uncertainty. Benchmark values reflect the listed jurisdiction and may not apply to all study contexts. Results depend on the ECOTOX database version installed."
                 ),
                 stringsAsFactors = FALSE
             )
