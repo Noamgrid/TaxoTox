@@ -27,7 +27,7 @@ if (Test-Path $tempDir) {
 New-Item -Path $tempDir        -ItemType Directory | Out-Null
 New-Item -Path "$tempDir\Data" -ItemType Directory | Out-Null
 
-# 2. Copy app files
+# 2. Copy app files (flat — shinyapps.io serves from app root)
 Copy-Item -Path (Join-Path $projectRoot "Code\app.R")               -Destination $tempDir
 Copy-Item -Path (Join-Path $projectRoot "Code\taxotox-service.json") -Destination $tempDir
 

@@ -310,7 +310,7 @@ ui <- fluidPage(
                             strong("Disclaimer: "),
                             "TaxoTox is a research screening tool. Outputs are indicative only and should not be used as the sole basis for regulatory decisions or risk management actions. ",
                             "Predicted LC50 values (marked \u007e) carry additional uncertainty. ",
-                            "Benchmark values reflect the listed jurisdiction and may not apply to all study contexts. ",
+                            "Benchmark values reflect the listed jurisdiction and may not apply to all study contexts; regulatory benchmarks are periodically revised and users should verify currency with the issuing authority. ",
                             "Results depend on the ECOTOX database version installed."
                         ),
                         h4("Top 10 Riskiest Samples (by PTI)"),
@@ -345,6 +345,7 @@ ui <- fluidPage(
 # The Sheet must be shared with the service account in taxotox-service.json.
 # Set TAXOTOX_SHEET_ID as an env var to override (e.g. for testing).
 TAXOTOX_SHEET_ID <- "1pftfWQNfIStasPqH1CvpDSAH3yHxYmjhggvAwlBaxDA"
+LOG_SHEET_NAME   <- "app_log"
 
 server <- function(input, output, session) {
 
@@ -375,8 +376,9 @@ server <- function(input, output, session) {
     # final_ecotox_data: Pre-processed ECOTOX data containing median acute
     #                    LC50/EC50 (conc_ng_L) per compound (cas_number) and
     #                    taxonomic group (ecotox_group).
-    Known_CAS          <- read.fst("../Data/Known_CAS.fst",         as.data.table = TRUE)
-    taxotox_reference  <- read.fst("../Data/taxotox_reference.fst", as.data.table = FALSE) %>%
+    .data_dir          <- if (dir.exists("../Data")) "../Data" else "Data"
+    Known_CAS          <- read.fst(file.path(.data_dir, "Known_CAS.fst"),         as.data.table = TRUE)
+    taxotox_reference  <- read.fst(file.path(.data_dir, "taxotox_reference.fst"), as.data.table = FALSE) %>%
         mutate(cas_number = as.character(cas_number))
 
     # ── Button state management (D) ───────────────────────────────────────────
@@ -528,6 +530,63 @@ server <- function(input, output, session) {
             googlesheets4::gs4_auth()   # interactive OAuth — browser prompt
         }
     }
+
+    # ── .ensure_log_tab / log_event ──────────────────────────────────────────
+    # Creates the app_log tab in the Google Sheet if it does not already exist,
+    # then appends one structured row per event. Both functions are fire-and-
+    # forget: they wrap every Google Sheets call in tryCatch and never throw,
+    # so a logging failure can never crash the app.
+    .ensure_log_tab <- function(sheet_id) {
+        tryCatch({
+            .gs4_auth_auto()
+            existing <- googlesheets4::sheet_names(sheet_id)
+            if (!LOG_SHEET_NAME %in% existing) {
+                googlesheets4::sheet_add(ss = sheet_id, sheet = LOG_SHEET_NAME)
+                header <- data.frame(
+                    timestamp   = character(), level       = character(),
+                    event       = character(), message     = character(),
+                    session_id  = character(), file_name   = character(),
+                    n_compounds = integer(),   n_samples   = integer(),
+                    stringsAsFactors = FALSE
+                )
+                googlesheets4::sheet_write(data = header, ss = sheet_id,
+                                           sheet = LOG_SHEET_NAME)
+            }
+        }, error = function(e) invisible(NULL))
+    }
+
+    log_event <- function(level, event, message,
+                          session_id  = NA_character_,
+                          file_name   = NA_character_,
+                          n_compounds = NA_integer_,
+                          n_samples   = NA_integer_) {
+        sheet_id <- Sys.getenv("TAXOTOX_SHEET_ID", unset = TAXOTOX_SHEET_ID)
+        if (!nzchar(sheet_id)) return(invisible(NULL))
+        row <- data.frame(
+            timestamp   = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+            level       = level,
+            event       = event,
+            message     = as.character(message)[1],
+            session_id  = as.character(session_id),
+            file_name   = as.character(file_name),
+            n_compounds = as.integer(n_compounds),
+            n_samples   = as.integer(n_samples),
+            stringsAsFactors = FALSE
+        )
+        tryCatch({
+            .gs4_auth_auto()
+            googlesheets4::sheet_append(ss = sheet_id, data = row,
+                                        sheet = LOG_SHEET_NAME)
+        }, error = function(e) invisible(NULL))
+    }
+
+    # ── Session logging init ──────────────────────────────────────────────────
+    .session_id <- substr(session$token, 1, 8)
+    local({
+        sid <- Sys.getenv("TAXOTOX_SHEET_ID", unset = TAXOTOX_SHEET_ID)
+        if (nzchar(sid)) .ensure_log_tab(sid)
+    })
+    log_event("INFO", "session_start", "New session", session_id = .session_id)
 
     # ── append_to_temp_cas ────────────────────────────────────────────────────
     # Appends newly confirmed PREFERRED_NAME / CASRN pairs to the temp_CAS log.
@@ -728,6 +787,12 @@ server <- function(input, output, session) {
             }
 
             setProgress(1.0, detail = "Complete.")
+            log_event("INFO", "casrn_match",
+                      paste0(nrow(v$final_search_results), " matched, ",
+                             length(unfound), " unresolved"),
+                      session_id  = .session_id,
+                      file_name   = if (!is.null(input$user_file)) input$user_file$name else NA_character_,
+                      n_compounds = length(v$p_vector))
 
             n_action <- nrow(manual_rows)
             if (n_action == 0) {
@@ -744,6 +809,9 @@ server <- function(input, output, session) {
                                paste("ERROR:", e$message),
                                "Check the CASRN Matching tab for details.")
             showNotification(paste("Error:", e$message), type = "error", duration = 10)
+            log_event("ERROR", "casrn_match", e$message,
+                      session_id = .session_id,
+                      file_name  = if (!is.null(input$user_file)) input$user_file$name else NA_character_)
         })
         }) # end withProgress
     }
@@ -838,6 +906,13 @@ server <- function(input, output, session) {
             v$p_vector <- v$user_data[[1]]
             v$summary_log <- c(v$summary_log,
                                paste("Loaded", length(v$p_vector), "compounds from file."))
+            log_event("INFO", "file_upload",
+                      paste0(input$user_file$name, " — ", length(v$p_vector),
+                             " compounds, ", ncol(v$user_data) - 1, " samples"),
+                      session_id  = .session_id,
+                      file_name   = input$user_file$name,
+                      n_compounds = length(v$p_vector),
+                      n_samples   = ncol(v$user_data) - 1L)
 
             # ── Unit plausibility check ──────────────────────────────────────
             numeric_vals <- unlist(v$user_data[, -1, with = FALSE])
@@ -915,6 +990,9 @@ server <- function(input, output, session) {
                                paste("ERROR:", e$message),
                                "Check the CASRN Matching tab for details.")
             showNotification(paste("Error:", e$message), type = "error", duration = 10)
+            log_event("ERROR", "file_upload", e$message,
+                      session_id = .session_id,
+                      file_name  = input$user_file$name)
         })
 
         }) # end withProgress
@@ -1506,10 +1584,19 @@ server <- function(input, output, session) {
 
             setProgress(1.0, detail = "Done.")
             v$summary_log <- c(v$summary_log, "Toxicity calculations complete. See tabs for results.")
+            log_event("INFO", "tox_calc",
+                      paste0("Calculation complete — ", nrow(v$final_search_results), " compounds"),
+                      session_id  = .session_id,
+                      file_name   = input$user_file$name,
+                      n_compounds = nrow(v$final_search_results),
+                      n_samples   = ncol(v$user_data) - 1L)
             updateTabsetPanel(session, "main_tabs", selected = "Toxicity Plots")
 
         }, error = function(e) {
             v$summary_log <- c(v$summary_log, "An error occurred during toxicity calculation:", e$message)
+            log_event("ERROR", "tox_calc", e$message,
+                      session_id = .session_id,
+                      file_name  = input$user_file$name)
         })
         }) # end withProgress
     })
@@ -1652,7 +1739,7 @@ server <- function(input, output, session) {
                     "Chronic risk \u2014 sub-lethal effects on sensitive species possible",
                     "Low risk \u2014 mixture unlikely to cause measurable toxicity",
                     "",
-                    "TaxoTox is a research screening tool. Outputs are indicative only and should not be used as the sole basis for regulatory decisions or risk management actions. Predicted LC50 values (marked ~) carry additional uncertainty. Benchmark values reflect the listed jurisdiction and may not apply to all study contexts. Results depend on the ECOTOX database version installed."
+                    "TaxoTox is a research screening tool. Outputs are indicative only and should not be used as the sole basis for regulatory decisions or risk management actions. Predicted LC50 values (marked ~) carry additional uncertainty. Benchmark values reflect the listed jurisdiction and may not apply to all study contexts; regulatory benchmarks are periodically revised and users should verify currency with the issuing authority. Results depend on the ECOTOX database version installed."
                 ),
                 stringsAsFactors = FALSE
             )
@@ -1834,6 +1921,7 @@ server <- function(input, output, session) {
         },
         content = function(file) {
             req(v$tox_results)
+            tryCatch({
             base_wb <- .build_basic_wb()
 
             if (any_advanced()) {
@@ -1865,6 +1953,12 @@ server <- function(input, output, session) {
             } else {
                 saveWorkbook(base_wb, file, overwrite = TRUE)
             }
+            }, error = function(e) {
+                log_event("ERROR", "export", e$message,
+                          session_id = .session_id,
+                          file_name  = input$user_file$name)
+                stop(e)
+            })
         }
     )
 

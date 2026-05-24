@@ -732,7 +732,12 @@ organophosphate at high TU fractions).
 TaxoTox implements IA with a fixed Hill slope of n = 1 (log-logistic dose-response),
 which corresponds to a simple Langmuir saturation curve:
 
-$$E_i = \frac{C_i}{LC50_i + C_i}$$
+$$E_i = \frac{C_i}{LC50_i + C_i} \tag{4}$$
+
+LaTeX source:
+```latex
+E_i = \frac{C_i}{LC50_i + C_i}
+```
 
 where $E_i$ is the fractional effect (0–1) of compound $i$ at measured concentration $C_i$,
 and $LC50_i$ is the same denominator used in the standard TU calculation
@@ -740,7 +745,12 @@ and $LC50_i$ is the same denominator used in the standard TU calculation
 
 The mixture fractional effect is then:
 
-$$E_{mix} = 1 - \prod_i (1 - E_i)$$
+$$E_{mix} = 1 - \prod_{i=1}^{n} (1 - E_i) \tag{5}$$
+
+LaTeX source:
+```latex
+E_{mix} = 1 - \prod_{i=1}^{n} (1 - E_i)
+```
 
 $E_{mix}$ is dimensionless and bounded 0–1, where $E_{mix} = 0.5$ corresponds to a
 mixture effect equivalent to the LC50 — the same threshold at which $PTI = 1$ in
