@@ -28,3 +28,12 @@ Data/Known_CAS_backup.fst
 
 # ShinyApps deployment state — machine-specific
 rsconnect/
+
+# Orphaned htmlwidget dependency bundle (no HTML report references it anymore)
+Docs/lib/
+
+# Office lock/temp files
+~$*
+
+# Dev-only QA fixture, not a curated user-facing sample
+Data/sample_coverage_test.csv
