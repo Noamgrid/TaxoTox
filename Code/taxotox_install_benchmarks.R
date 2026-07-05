@@ -36,7 +36,10 @@ setwd(.script_dir)
 #   benchmark_ca_ccme_fresh_lt_ng_L
 #
 # Denominator selection rationale (documented in TaxoTox_Technical_Methods.md):
-#   US EPA  : acute columns only (fish AcuteA, invertebrate AcuteA.1, algae AcuteC)
+#   US EPA  : acute columns only (fish = raw col 4, invertebrate = raw col 8,
+#             algae = raw col 12 IC50 — see column-mapping note at I-6 below;
+#             verified against EPA's live benchmarks page, NOT the same as
+#             the positions the duplicate-header auto-rename suggests)
 #             Chronic columns are retained in source but not used as TU denominators
 #   EU EQS  : Annual Average EQS — the only value provided in this CSV extract
 #             Reflects estuarine/coastal monitoring (primary TaxoTox use case)
@@ -115,12 +118,48 @@ if (!file.exists(usepa_path)) stop("Missing: ", usepa_path)
 
 usepa_raw <- read.csv(usepa_path, check.names = TRUE, stringsAsFactors = FALSE)
 
-# Column mapping after R auto-rename of duplicate headers:
-#   AcuteA   = freshwater fish, acute
-#   AcuteA.1 = freshwater invertebrate, acute
-#   AcuteC   = nonvascular plant (algae), acute
-# Chronic columns retained in source but NOT used as TU denominators
-# (mixing chronic benchmarks with acute LC50-based TU violates endpoint consistency)
+# ---------------------------------------------------------------------------
+# Column mapping — READ BEFORE EDITING
+# ---------------------------------------------------------------------------
+# EPA's source table uses superscript footnote letters as column headers
+# (e.g. "AcuteA", "ChronicB"), and BOTH the Fish and Invertebrate columns
+# share the same footnote letters, as do BOTH the Nonvascular and Vascular
+# Plant columns. The raw CSV therefore has genuinely duplicated header text,
+# and read.csv(check.names = TRUE) auto-renames duplicates by appending
+# ".1" in column order — that suffix reflects POSITION only, not organism
+# identity. A previous version of this script assumed "AcuteA.1" meant
+# "invertebrate acute", which is wrong and silently used the wrong
+# denominator for the crust/algae Benchmark Hazard Index (confirmed via
+# comparison with EPA's live benchmarks page on 2026-07-05):
+#
+#                    Fish Acute (ug/L)   Invert Acute (ug/L)   Algae IC50 (ug/L)
+#   Chlorpyrifos           0.9                  0.05                  140
+#   Dichlorvos             50                   0.0334              14000
+#
+# Matching these known values against raw column position (1-indexed,
+# including the leading Pesticide/Year/CAS columns) gives the TRUE mapping:
+#   raw col  4 ("AcuteA")   -> Freshwater fish, acute
+#   raw col  8 ("AcuteC")   -> Freshwater invertebrate, acute   (NOT col 6)
+#   raw col 12 ("IC50E")    -> Nonvascular plant (algae), IC50  (NOT col 8)
+#
+# If you download a fresh copy of USEPA_aquatic_benchmarks.csv and EPA has
+# changed the column layout, the sanity check below (which re-verifies these
+# same two compounds after parsing) will fail loudly with instructions,
+# instead of silently reproducing this bug. Do not "fix" a failing check by
+# loosening the tolerance — re-derive the column positions instead, by
+# comparing a few well-known compounds against EPA's live table:
+# https://www.epa.gov/pesticide-science-and-assessing-pesticide-risks/aquatic-life-benchmarks-and-ecological-risk
+# ---------------------------------------------------------------------------
+FISH_ACUTE_COL   <- 4
+INVERT_ACUTE_COL <- 8
+ALGAE_IC50_COL   <- 12
+
+.usepa_names <- names(usepa_raw)
+.fish_col    <- .usepa_names[FISH_ACUTE_COL]
+.invert_col  <- .usepa_names[INVERT_ACUTE_COL]
+.algae_col   <- .usepa_names[ALGAE_IC50_COL]
+message(sprintf("  Column mapping: fish = raw col %d (%s), invertebrate = raw col %d (%s), algae = raw col %d (%s)",
+                FISH_ACUTE_COL, .fish_col, INVERT_ACUTE_COL, .invert_col, ALGAE_IC50_COL, .algae_col))
 
 usepa <- usepa_raw %>%
   rename(cas_number = CAS.number) %>%
@@ -128,9 +167,9 @@ usepa <- usepa_raw %>%
   filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", trimws(cas_number))) %>%
   mutate(
     cas_number = trimws(cas_number),
-    benchmark_usepa_fish_acute_ng_L  = .parse_benchmark(AcuteA)   * UG_TO_NG,
-    benchmark_usepa_crust_acute_ng_L = .parse_benchmark(AcuteA.1) * UG_TO_NG,
-    benchmark_usepa_algae_acute_ng_L = .parse_benchmark(AcuteC)   * UG_TO_NG
+    benchmark_usepa_fish_acute_ng_L  = .parse_benchmark(.data[[.fish_col]])   * UG_TO_NG,
+    benchmark_usepa_crust_acute_ng_L = .parse_benchmark(.data[[.invert_col]]) * UG_TO_NG,
+    benchmark_usepa_algae_acute_ng_L = .parse_benchmark(.data[[.algae_col]])  * UG_TO_NG
   ) %>%
   select(cas_number,
          benchmark_usepa_fish_acute_ng_L,
@@ -148,6 +187,44 @@ message(sprintf("  US EPA: %d compounds parsed", nrow(usepa)))
 message(sprintf("    fish acute  : %d non-NA", sum(!is.na(usepa$benchmark_usepa_fish_acute_ng_L))))
 message(sprintf("    crust acute : %d non-NA", sum(!is.na(usepa$benchmark_usepa_crust_acute_ng_L))))
 message(sprintf("    algae acute : %d non-NA", sum(!is.na(usepa$benchmark_usepa_algae_acute_ng_L))))
+
+# ---------------------------------------------------------------------------
+# Sanity check — guards against silently reintroducing the column-swap bug
+# above if a future USEPA_aquatic_benchmarks.csv download reorders columns.
+# Tolerance is a factor of 3 either way: wide enough to absorb an ordinary
+# EPA revision to a benchmark value, tight enough that a column swap
+# (which produced >100x errors in the original bug) still fails loudly.
+# ---------------------------------------------------------------------------
+.check_usepa_benchmark <- function(cas, name, expected_fish, expected_invert, expected_algae_ic50, tol = 3) {
+  row <- usepa[usepa$cas_number == cas, ]
+  if (nrow(row) == 0) {
+    warning(sprintf("USEPA benchmark sanity check skipped: CAS %s (%s) not found in source table.", cas, name))
+    return(invisible())
+  }
+  parsed  <- c(fish = row$benchmark_usepa_fish_acute_ng_L[1]  / UG_TO_NG,
+              invert = row$benchmark_usepa_crust_acute_ng_L[1] / UG_TO_NG,
+              algae  = row$benchmark_usepa_algae_acute_ng_L[1] / UG_TO_NG)
+  expected <- c(fish = expected_fish, invert = expected_invert, algae = expected_algae_ic50)
+  ratio <- parsed / expected
+  bad <- is.na(ratio) | ratio < 1 / tol | ratio > tol
+  if (any(bad)) {
+    stop(sprintf(paste0(
+      "USEPA benchmark sanity check FAILED for %s (CAS %s), column(s) %s: ",
+      "parsed = %s ug/L, expected ~ %s ug/L (within %gx). ",
+      "This usually means USEPA_aquatic_benchmarks.csv's column layout has ",
+      "changed since this script was written. Re-derive FISH_ACUTE_COL / ",
+      "INVERT_ACUTE_COL / ALGAE_IC50_COL above by comparing known compounds ",
+      "against EPA's live benchmarks page (see comment above) — do not ",
+      "loosen this check instead."),
+      name, cas, paste(names(bad)[bad], collapse = ", "),
+      paste(round(parsed[bad], 5), collapse = ", "),
+      paste(expected[bad], collapse = ", "), tol))
+  }
+}
+
+.check_usepa_benchmark("2921-88-2", "Chlorpyrifos", expected_fish = 0.9, expected_invert = 0.05,   expected_algae_ic50 = 140)
+.check_usepa_benchmark("62-73-7",   "Dichlorvos",   expected_fish = 50,  expected_invert = 0.0334, expected_algae_ic50 = 14000)
+message("  Sanity check passed: USEPA column mapping verified against Chlorpyrifos and Dichlorvos reference values.")
 
 # =============================================================================
 # I-7  EU WFD Environmental Quality Standards (Directive 2013/39/EU)
