@@ -187,6 +187,22 @@ ui <- fluidPage(
 
                 # Coverage warning (A-8) — rendered by server when coverage is low
                 uiOutput("advanced_coverage_warning")
+            ),
+
+            # ── Reference Data download panel ─────────────────────────────────
+            wellPanel(
+                h4("Reference Data"),
+                p(style = "font-size:0.85em; color:#555;",
+                  "Download the underlying toxicity reference tables used by TaxoTox."),
+                downloadButton("download_taxotox_reference",
+                               "TaxoTox Reference Data (LC50/HC5/Benchmarks)",
+                               class = "btn-default btn-block",
+                               style = "white-space:normal; height:auto; padding:8px 12px;"),
+                br(), br(),
+                downloadButton("download_known_cas",
+                               "Known CASRN Lookup Table",
+                               class = "btn-default btn-block",
+                               style = "white-space:normal; height:auto; padding:8px 12px;")
             )
         ),
 
@@ -380,6 +396,19 @@ server <- function(input, output, session) {
     Known_CAS          <- read.fst(file.path(.data_dir, "Known_CAS.fst"),         as.data.table = TRUE)
     taxotox_reference  <- read.fst(file.path(.data_dir, "taxotox_reference.fst"), as.data.table = FALSE) %>%
         mutate(cas_number = as.character(cas_number))
+
+    # ── Reference Data download handlers ──────────────────────────────────────
+    # Let users download the same reference tables the app uses internally,
+    # as Excel workbooks, for transparency / offline reference.
+    output$download_taxotox_reference <- downloadHandler(
+        filename = function() "taxotox_reference_data.xlsx",
+        content  = function(file) openxlsx::write.xlsx(taxotox_reference, file)
+    )
+
+    output$download_known_cas <- downloadHandler(
+        filename = function() "taxotox_known_cas.xlsx",
+        content  = function(file) openxlsx::write.xlsx(as.data.frame(Known_CAS), file)
+    )
 
     # ── Button state management (D) ───────────────────────────────────────────
     # Disable buttons 2 and 3 at startup; enable reactively as prerequisites met.
