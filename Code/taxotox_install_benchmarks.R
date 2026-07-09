@@ -166,7 +166,10 @@ usepa <- usepa_raw %>%
   # Keep only rows with a plausible CAS number (skip "NR", blank, footnote rows)
   filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", trimws(cas_number))) %>%
   mutate(
-    cas_number = trimws(cas_number),
+    # Reference table (taxotox_reference.fst) keys compounds by dash-free CAS
+    # (see app.R's gsub("-", "", CASRN) at compound-matching time) — normalize
+    # here so this join key matches, instead of silently never matching.
+    cas_number = gsub("-", "", trimws(cas_number)),
     benchmark_usepa_fish_acute_ng_L  = .parse_benchmark(.data[[.fish_col]])   * UG_TO_NG,
     benchmark_usepa_crust_acute_ng_L = .parse_benchmark(.data[[.invert_col]]) * UG_TO_NG,
     benchmark_usepa_algae_acute_ng_L = .parse_benchmark(.data[[.algae_col]])  * UG_TO_NG
@@ -196,7 +199,7 @@ message(sprintf("    algae acute : %d non-NA", sum(!is.na(usepa$benchmark_usepa_
 # (which produced >100x errors in the original bug) still fails loudly.
 # ---------------------------------------------------------------------------
 .check_usepa_benchmark <- function(cas, name, expected_fish, expected_invert, expected_algae_ic50, tol = 3) {
-  row <- usepa[usepa$cas_number == cas, ]
+  row <- usepa[usepa$cas_number == gsub("-", "", cas), ]
   if (nrow(row) == 0) {
     warning(sprintf("USEPA benchmark sanity check skipped: CAS %s (%s) not found in source table.", cas, name))
     return(invisible())
@@ -250,6 +253,7 @@ eu <- eu_raw %>%
   ) %>%
   filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
   mutate(
+    cas_number = gsub("-", "", cas_number),
     benchmark_eu_eqs_aa_marine_ng_L = .parse_benchmark(aa_eqs_raw) * UG_TO_NG
   ) %>%
   select(cas_number, benchmark_eu_eqs_aa_marine_ng_L) %>%
@@ -282,6 +286,7 @@ au_fresh <- au_raw %>%
     benchmark_au_anzg_fresh_ng_L = .parse_benchmark(Tox.LOSP.95) * UG_TO_NG
   ) %>%
   filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
+  mutate(cas_number = gsub("-", "", cas_number)) %>%
   select(cas_number, benchmark_au_anzg_fresh_ng_L) %>%
   group_by(cas_number) %>%
   slice_max(order_by = !is.na(benchmark_au_anzg_fresh_ng_L),
@@ -295,6 +300,7 @@ au_marine <- au_raw %>%
     benchmark_au_anzg_marine_ng_L = .parse_benchmark(Tox.LOSP.95) * UG_TO_NG
   ) %>%
   filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
+  mutate(cas_number = gsub("-", "", cas_number)) %>%
   select(cas_number, benchmark_au_anzg_marine_ng_L) %>%
   group_by(cas_number) %>%
   slice_max(order_by = !is.na(benchmark_au_anzg_marine_ng_L),
@@ -332,6 +338,7 @@ ca <- ca_raw %>%
     benchmark_ca_ccme_fresh_lt_ng_L = .parse_benchmark(.data[[lt_col]]) * UG_TO_NG
   ) %>%
   filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
+  mutate(cas_number = gsub("-", "", cas_number)) %>%
   select(cas_number, benchmark_ca_ccme_fresh_lt_ng_L) %>%
   group_by(cas_number) %>%
   slice_max(order_by = !is.na(benchmark_ca_ccme_fresh_lt_ng_L),

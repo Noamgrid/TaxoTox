@@ -363,6 +363,14 @@ ui <- fluidPage(
 TAXOTOX_SHEET_ID <- "1pftfWQNfIStasPqH1CvpDSAH3yHxYmjhggvAwlBaxDA"
 LOG_SHEET_NAME   <- "app_log"
 
+# Hard cap on how many unresolved compound names a single upload will send to
+# the PubChem API (two blocking HTTP calls each, ~1-2s/compound). Without this
+# cap, a large file with many unresolved names (e.g. uploaded with the wrong
+# data-orientation setting) triggers an unbounded serial network loop that
+# freezes the whole session for hours. Names beyond the cap are routed
+# straight to Manual CASRN Entry instead. Override via env var for tuning.
+PUBCHEM_MAX_AUTO <- as.integer(Sys.getenv("TAXOTOX_PUBCHEM_MAX_AUTO", unset = 200))
+
 server <- function(input, output, session) {
 
     # ── Reactive state ────────────────────────────────────────────────────────
@@ -727,6 +735,29 @@ server <- function(input, output, session) {
     # Accesses v, input, session via closure.
     run_casrn_layers2to4 <- function(unfound) {
         removeModal()
+
+        # ── Cap: bound the PubChem loop regardless of how it was reached ────
+        # A large `unfound` count (e.g. from a file uploaded with the wrong
+        # data-orientation setting) would otherwise trigger an unbounded
+        # serial network loop in pubchem_lookup() below, freezing the app for
+        # hours. Anything beyond the cap is simply skipped (not analysed) —
+        # the user is notified clearly and the rest of the pipeline proceeds
+        # normally with the capped subset.
+        if (length(unfound) > PUBCHEM_MAX_AUTO) {
+            n_skipped <- length(unfound) - PUBCHEM_MAX_AUTO
+            unfound   <- unfound[seq_len(PUBCHEM_MAX_AUTO)]
+            v$summary_log <- c(v$summary_log,
+                paste0("Note: ", n_skipped, " unresolved compound name(s) exceeded the automatic ",
+                       "lookup limit (", PUBCHEM_MAX_AUTO, " per upload) and were skipped — not ",
+                       "matched or included in the toxicity calculation. If this count looks ",
+                       "unexpectedly large, check that the data-layout radio button is set correctly."))
+            showNotification(
+                paste0("⚠ ", n_skipped, " compound(s) exceeded the automatic lookup limit (",
+                       PUBCHEM_MAX_AUTO, ") and were skipped. Check your data-layout setting if this ",
+                       "seems too high."),
+                type = "warning", duration = 15)
+        }
+
         withProgress(message = "Searching for CASRNs (layer 2)", value = 0, {
         tryCatch({
 
@@ -1464,9 +1495,9 @@ server <- function(input, output, session) {
                 # US EPA — three group-specific sheets using acute columns
                 if (input$bm_usepa) {
                     usepa_groups <- list(
-                        list(grp = "fish",       col = "benchmark_usepa_fish_acute_ng_L",  label = "Benchmark HI - US EPA (Fish)"),
-                        list(grp = "crustacean", col = "benchmark_usepa_crust_acute_ng_L", label = "Benchmark HI - US EPA (Crustacean)"),
-                        list(grp = "algae",      col = "benchmark_usepa_algae_acute_ng_L", label = "Benchmark HI - US EPA (Algae)")
+                        list(grp = "fish",       col = "benchmark_usepa_fish_acute_ng_L",  label = "Bench. US EPA (Fish)"),
+                        list(grp = "crustacean", col = "benchmark_usepa_crust_acute_ng_L", label = "Bench. US EPA (Crust)"),
+                        list(grp = "algae",      col = "benchmark_usepa_algae_acute_ng_L", label = "Bench. US EPA (Algae)")
                     )
                     for (g in usepa_groups) {
                         if (!g$col %in% names(taxotox_reference)) next
@@ -1477,9 +1508,9 @@ server <- function(input, output, session) {
 
                 # Other frameworks — single sheet each (no group-specific columns)
                 other_bm <- list(
-                    list(flag = input$bm_eu,   col = "benchmark_eu_eqs_aa_marine_ng_L", label = "Benchmark HI - EU EQS"),
-                    list(flag = input$bm_anzg, col = "benchmark_au_anzg_marine_ng_L",   label = "Benchmark HI - AU ANZG"),
-                    list(flag = input$bm_ccme, col = "benchmark_ca_ccme_fresh_lt_ng_L", label = "Benchmark HI - CA CCME")
+                    list(flag = input$bm_eu,   col = "benchmark_eu_eqs_aa_marine_ng_L", label = "Bench. EU EQS"),
+                    list(flag = input$bm_anzg, col = "benchmark_au_anzg_marine_ng_L",   label = "Bench. AU ANZG"),
+                    list(flag = input$bm_ccme, col = "benchmark_ca_ccme_fresh_lt_ng_L", label = "Bench. CA CCME")
                 )
                 for (bm in other_bm) {
                     if (!bm$flag) next
@@ -1890,8 +1921,8 @@ server <- function(input, output, session) {
                     writeData(wb, sname, v$benchmark_results[[sname]])
                 }
             } else {
-                addWorksheet(wb, "Benchmark HI - No Data")
-                writeData(wb, "Benchmark HI - No Data", data.frame(
+                addWorksheet(wb, "Bench. No Data")
+                writeData(wb, "Bench. No Data", data.frame(
                     Note = paste0(
                         "No benchmark values were found for any of the uploaded compounds. ",
                         "The selected benchmark framework(s) do not cover the compounds in this dataset. ",
@@ -1900,7 +1931,7 @@ server <- function(input, output, session) {
                     ),
                     stringsAsFactors = FALSE
                 ))
-                setColWidths(wb, "Benchmark HI - No Data", cols = 1, widths = 100)
+                setColWidths(wb, "Bench. No Data", cols = 1, widths = 100)
             }
         }
 
@@ -1966,6 +1997,18 @@ server <- function(input, output, session) {
                 if (length(adv_wb$sheet_names) > 0) {
                     saveWorkbook(adv_wb, advanced_path, overwrite = TRUE)
                     zip(file, files = c(basic_path, advanced_path), flags = "-j")
+                    showNotification(
+                        paste0("This download contains TWO files zipped together: a ",
+                               "BASIC workbook ('Algae/Crustacean/Fish toxicity' sheets, ",
+                               "column 'PTI') and an ADVANCED workbook (e.g. 'Bench. US EPA ",
+                               "(Fish)'). The Basic workbook's PTI column ALWAYS reports ",
+                               "the Standard Concentration-Addition (median-LC50) result, ",
+                               "regardless of which Advanced method(s) you selected. If you ",
+                               "selected an Advanced method, your result is in the separate ",
+                               "ADVANCED file - keep both and check the correct one."),
+                        type     = "warning",
+                        duration = 20
+                    )
                 } else {
                     # No advanced sheets produced — none of the selected methods had
                     # any compound coverage. Alert the user and fall back to basic only.
