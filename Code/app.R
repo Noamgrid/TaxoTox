@@ -171,6 +171,7 @@ ui <- fluidPage(
                 checkboxInput("method_benchmark", "Benchmark Hazard Index",  value = FALSE),
                 checkboxInput("method_ia",        "Independent Action (IA)", value = FALSE),
                 checkboxInput("method_cama",      "CAMA",                    value = FALSE),
+                checkboxInput("method_nowell",    "Taxon-Sensitive PTI (Nowell et al. 2014)", value = FALSE),
 
                 # Benchmark sub-selector (A-6) — below all methods, shown only when benchmark is checked
                 conditionalPanel(
@@ -440,7 +441,8 @@ server <- function(input, output, session) {
     # Any advanced method selected?
     any_advanced <- reactive({
         input$show_advanced &&
-            (input$method_hc5 || input$method_benchmark || input$method_ia || input$method_cama)
+            (input$method_hc5 || input$method_benchmark || input$method_ia || input$method_cama ||
+             input$method_nowell)
     })
 
     # Dynamic button labels
@@ -503,6 +505,13 @@ server <- function(input, output, session) {
                     benchmark_ca_ccme_fresh_lt_ng_L  = "CA CCME")
                 if (pct < 80) msgs <- c(msgs, sprintf("%s: %d%% compound coverage", label, pct))
             }
+        }
+        if (input$method_nowell) {
+            n_covered <- ref_matched %>%
+                filter(!is.na(stc_nowell_ng_L)) %>%
+                distinct(cas_number) %>% nrow()
+            pct <- round(100 * n_covered / max(n, 1))
+            if (pct < 80) msgs <- c(msgs, sprintf("Nowell PTI: %d%% compound coverage", pct))
         }
 
         if (length(msgs) == 0) return(NULL)
@@ -1642,6 +1651,51 @@ server <- function(input, output, session) {
                 v$cama_results <- NULL
             }
 
+            # ── A-13: Taxon-Sensitive PTI (Nowell et al. 2014) ────────────────
+            # Denominator: sensitive toxicity concentration (STC), "Approach B"
+            # from Nowell et al. (2014) -- 5th percentile of individual toxicity
+            # test values when n > 12, else the minimum (see stc_nowell_ng_L in
+            # taxotox_reference.fst / Code/taxotox_install.R for the derivation).
+            # Fish uses the full ECOTOX fish population; the crustacean-group row
+            # is restricted to the 17 cladoceran genera Nowell et al. used, so
+            # this method covers fish and cladocerans only (no algae -- Nowell's
+            # method does not cover algae at all).
+            if (input$method_nowell) {
+                setProgress(0.97, detail = "Nowell PTI: computing...")
+
+                .calc_nowell <- function(grp) {
+                    denom <- taxotox_reference %>%
+                        filter(cas_number %in% cas_search_list,
+                               ecotox_group == grp,
+                               !is.na(stc_nowell_ng_L)) %>%
+                        left_join(p_final, by = "cas_number") %>%
+                        filter(!is.na(PREFERRED_NAME)) %>%
+                        select(PREFERRED_NAME, stc_nowell_ng_L)
+                    if (nrow(denom) == 0) return(NULL)
+
+                    denom %>%
+                        left_join(v$user_data, by = "PREFERRED_NAME") %>%
+                        mutate(across(where(is.numeric) & !stc_nowell_ng_L,
+                                     ~ .x / stc_nowell_ng_L)) %>%
+                        select(-stc_nowell_ng_L) %>%
+                        pivot_longer(cols = 2:length(.), names_to = "Sample", values_to = "TU") %>%
+                        pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
+                        mutate(PTI = rowSums(across(where(is.numeric)), na.rm = TRUE)) %>%
+                        select(Sample, PTI, everything())
+                }
+
+                nowell_fish       <- .calc_nowell("fish")
+                nowell_cladoceran <- .calc_nowell("crustacean")
+
+                v$nowell_results <- Filter(Negate(is.null), list(
+                    "Nowell PTI (Fish)"       = nowell_fish,
+                    "Nowell PTI (Cladoceran)" = nowell_cladoceran
+                ))
+                if (length(v$nowell_results) == 0) v$nowell_results <- NULL
+            } else {
+                v$nowell_results <- NULL
+            }
+
             setProgress(1.0, detail = "Done.")
             v$summary_log <- c(v$summary_log, "Toxicity calculations complete. See tabs for results.")
             log_event("INFO", "tox_calc",
@@ -1966,6 +2020,28 @@ server <- function(input, output, session) {
                     stringsAsFactors = FALSE
                 ))
                 setColWidths(wb, "CAMA - No Data", cols = 1, widths = 100)
+            }
+        }
+
+        # ── Nowell Taxon-Sensitive PTI sheets ───────────────────────────────────
+        if (input$method_nowell) {
+            if (!is.null(v$nowell_results) && length(v$nowell_results) > 0) {
+                for (sname in names(v$nowell_results)) {
+                    addWorksheet(wb, sname)
+                    writeData(wb, sname, v$nowell_results[[sname]])
+                }
+            } else {
+                addWorksheet(wb, "Nowell - No Data")
+                writeData(wb, "Nowell - No Data", data.frame(
+                    Note = paste0(
+                        "No Taxon-Sensitive PTI (Nowell et al. 2014) values were found for the ",
+                        "uploaded compounds. This method requires ECOTOX toxicity data for fish, ",
+                        "or for the 17 cladoceran genera Nowell et al. used for the crustacean group; ",
+                        "coverage is narrower than the Standard PTI or Benchmark HI methods."
+                    ),
+                    stringsAsFactors = FALSE
+                ))
+                setColWidths(wb, "Nowell - No Data", cols = 1, widths = 100)
             }
         }
 

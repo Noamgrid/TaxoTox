@@ -153,6 +153,9 @@ WITH enriched_results AS (
         t.test_id,
         t.reference_number,
         t.exposure_type,
+        t.exposure_duration_mean,
+        t.exposure_duration_unit,
+        t.media_type,
         r.endpoint,
         r.trend,
         r.effect,
@@ -165,6 +168,8 @@ WITH enriched_results AS (
         r.conc1_min,
         r.conc1_max,
         s.species,
+        s.genus,
+        s.family,
         s.ecotox_group,
         c.chemical_name,
         c.cas_number,
@@ -214,6 +219,9 @@ SELECT
     er.trend,
     er.effect,
     er.exposure_type,
+    er.exposure_duration_mean,
+    er.exposure_duration_unit,
+    er.media_type,
     er.measurement,
     er.measurement_comments,
     er.test_id,
@@ -221,6 +229,8 @@ SELECT
     er.conc1_unit,
     t.test_cas,
     er.species,
+    er.genus,
+    er.family,
 
     -- Normalise ecotox_group labels: ECOTOX uses varied strings
     -- (e.g. 'Fish', 'Saltwater Fish'); map all to lowercase tokens
@@ -351,6 +361,99 @@ reference <- final_ecotox_data %>%
     median_lc50_ng_L = median(conc_ng_L, na.rm = TRUE),
     .groups = "drop"
   )
+
+# --- 7a-ii: Nowell et al. (2014) "Taxon-Sensitive PTI" denominator ----------
+# Sensitive toxicity concentration (STC), "Approach B" from Nowell et al.
+# (2014) Supplementary Information Appendix A, sections 3-4: for each
+# compound's population of individual (unweighted) toxicity test values,
+#   n >  12  ->  STC = 5th percentile of the values
+#   n <= 12  ->  STC = minimum of the values
+# Threshold empirically derived by Nowell et al. via Monte Carlo simulation
+# (not an arbitrary choice) -- see AppA.pdf sec. 4. Percentile interpolation
+# type is not specified in the paper; R's default quantile() (type 7) is used.
+#
+# For fish, this uses the same population as median_lc50_ng_L (all ECOTOX
+# fish records). For crustacean rows, this is INTENTIONALLY a narrower
+# population than median_lc50_ng_L uses: restricted to the 17 cladoceran
+# genera Nowell et al. tested (their Appendix C "Table C.1 PTI taxa"), not
+# all crustacean species. The row stays labelled ecotox_group == "crustacean"
+# for compatibility with app.R's existing per-group filtering, but
+# stc_nowell_ng_L/n_stc_nowell specifically reflect cladoceran-only data.
+# Algae has no equivalent in Nowell et al. (their method covers only fish,
+# cladocerans, and benthic invertebrates) -- no value is computed for algae.
+
+NOWELL_CLADOCERAN_GENERA <- c(
+  "Acantholeberis", "Acroperus", "Alona", "Alonella", "Bosmina",
+  "Ceriodaphnia", "Chydorus", "Daphnia", "Diaphanosoma", "Disparalona",
+  "Eurycercus", "Moina", "Moinodaphnia", "Pleuroxus", "Pseudosida",
+  "Scapholeberis", "Simocephalus"
+)
+
+.nowell_stc <- function(values) {
+  values <- values[!is.na(values) & values > 0]
+  n <- length(values)
+  if (n == 0) return(NA_real_)
+  if (n > 12) as.numeric(quantile(values, probs = 0.05, names = FALSE))
+  else min(values)
+}
+
+# Nowell et al. (2014) main paper Table 1 ("Standard criteria for toxicity
+# test duration, endpoint, and measured effect, by taxonomic group") specifies
+# 96-hour LC50 for fish and 48-hour EC50/LC50 for cladocerans. Most ECOTOX
+# records don't have exposure duration coded at all (majority "NC") --
+# excluding those outright would discard most usable data for a metadata gap,
+# not because the test was actually non-standard. So: keep records with
+# unrecorded duration ("NC"/NA) or matching the standard; exclude only records
+# where a NON-standard duration is explicitly logged.
+.duration_ok <- function(unit, mean_val, standard_hours) {
+  is.na(unit) | unit %in% c("NC", "") | (unit == "h" & mean_val == standard_hours)
+}
+
+# NOTE: a freshwater-only filter (media_type "FW" vs "SW") was tried and
+# reverted -- Nowell et al.'s title says "...to Freshwater Aquatic
+# Organisms", but empirically restricting to media_type=="FW" made the fish
+# fit WORSE (R² 0.813 -> 0.738) rather than better, unlike every other fix
+# here. Likely explanation: excluding saltwater records pushed some compounds
+# below the n>12 percentile threshold, forcing a noisier minimum-based STC.
+# Not reapplying without further investigation.
+
+# Nowell et al. (2014) AppA.pdf sec. 2 is titled "Inclusion of EC50
+# (immobilization) and LC50 values as CLADOCERAN endpoints" -- this EC50
+# special-case is scoped to cladocerans only; no equivalent section exists for
+# fish, meaning fish STC is LC50-only in Nowell's method.
+nowell_fish <- final_ecotox_data %>%
+  filter(ecotox_group == "fish", endpoint == "LC50",
+         .duration_ok(exposure_duration_unit, exposure_duration_mean, 96)) %>%
+  group_by(cas_number) %>%
+  summarise(
+    ecotox_group      = "fish",
+    stc_nowell_ng_L   = .nowell_stc(conc_ng_L),
+    n_stc_nowell      = sum(!is.na(conc_ng_L) & conc_ng_L > 0),
+    .groups = "drop"
+  )
+
+nowell_cladoceran <- final_ecotox_data %>%
+  filter(ecotox_group == "crustacean", genus %in% NOWELL_CLADOCERAN_GENERA) %>%
+  # Nowell et al. (2014) AppA.pdf sec. 2 restrict cladoceran EC50 data to the
+  # immobilization endpoint specifically -- LC50 is kept as-is (mortality is
+  # unambiguous). Without this, chronic/sub-lethal EC50 records (reproduction,
+  # population growth, etc.) ~1000x more sensitive than acute immobilization
+  # leak into the STC. Confirmed empirically for Diazinon: stc_nowell_ng_L went
+  # from 0.323 ng/L (n=112, contaminated) to 239 ng/L (n=80, IMBL-only).
+  filter(endpoint == "LC50" | (endpoint == "EC50" & measurement == "IMBL")) %>%
+  filter(.duration_ok(exposure_duration_unit, exposure_duration_mean, 48)) %>%
+  group_by(cas_number) %>%
+  summarise(
+    ecotox_group      = "crustacean",
+    stc_nowell_ng_L   = .nowell_stc(conc_ng_L),
+    n_stc_nowell      = sum(!is.na(conc_ng_L) & conc_ng_L > 0),
+    .groups = "drop"
+  )
+
+nowell_stc_table <- bind_rows(nowell_fish, nowell_cladoceran)
+
+reference <- reference %>%
+  left_join(nowell_stc_table, by = c("cas_number", "ecotox_group"))
 
 # --- 7b: SSD-based HC5 (hc5_ssd_ng_L) --------------------------------------
 # SLOW step (~15–30 min): fits a log-normal SSD for every compound×group pair

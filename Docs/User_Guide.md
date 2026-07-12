@@ -172,6 +172,21 @@ alongside the standard calculation on the same button press:
   datasets (dominated by baseline-narcosis compounds) CAMA tracks the standard PTI closely;
   divergence signals a mixture with meaningful contributions from specifically-acting
   compounds (organophosphates, pyrethroids, triazines).
+- **Taxon-Sensitive PTI (Nowell et al. 2014)** — replicates the USGS NAWQA Pesticide
+  Toxicity Index methodology (Nowell, Norman, Moran, Martin & Stone, 2014, *Sci. Total
+  Environ.* 476–477:144–157), the reference method behind the published NWQN/RSQA PTI
+  values many USGS water-quality studies report. Denominator is a "sensitive toxicity
+  concentration": the 5th percentile of individual ECOTOX toxicity values when more than
+  12 are available, otherwise the minimum. Covers **fish and cladocerans only** (Nowell's
+  method doesn't include algae, and TaxoTox doesn't model their third taxon, benthic
+  invertebrates); the cladoceran denominator is restricted to the 17 cladoceran genera
+  Nowell et al. tested, not TaxoTox's full crustacean group, so results are directly
+  comparable to published cladoceran-PTI values in a way the Benchmark Hazard Index
+  method (a cross-invertebrate regulatory value) is not. Coverage is narrower than the
+  other methods since it draws only on ECOTOX data (Nowell et al. also used OPP
+  benchmarks and the Pesticide Properties Database as supplementary sources; TaxoTox's
+  version does not). See `TaxoTox_Technical_Methods.md` Section 10.6 for the full
+  algorithm.
 
 Full formulas, data sources, and validation for each method are in
 `TaxoTox_Technical_Methods.md` (Sections 5, 6, 10, 10.5).

@@ -62,6 +62,8 @@ the production server.
 | `benchmark_au_anzg_marine_ng_L` | numeric | Australia ANZG — marine water, 95% species protection (ng/L) |
 | `benchmark_au_anzg_fresh_ng_L` | numeric | Australia ANZG — freshwater, 95% species protection (ng/L) |
 | `benchmark_ca_ccme_fresh_lt_ng_L` | numeric | Canada CCME — freshwater long-term (chronic) guideline (ng/L) |
+| `stc_nowell_ng_L` | numeric | Nowell et al. (2014) sensitive toxicity concentration (ng/L); fish = full fish population, crustacean row = cladoceran-genus-restricted only (see Section 10.6) |
+| `n_stc_nowell` | integer | Number of toxicity test values behind `stc_nowell_ng_L` |
 
 ---
 
@@ -843,6 +845,97 @@ cross-mechanism interactions may be important.
 - Altenburger, R., et al. (2000). Predictability of the toxicity of multiple chemical
   mixtures to Vibrio fischeri: mixtures composed of similarly acting chemicals.
   *Environmental Toxicology and Chemistry*, 19(10), 2341–2347.
+
+---
+
+## 10.6 Taxon-Sensitive PTI (Nowell et al. 2014)
+
+### 10.6.1 Background
+
+This method replicates the USGS NAWQA Pesticide Toxicity Index (PTI) as defined by
+Nowell, Norman, Moran, Martin & Stone (2014), the methodology behind the published
+Fish-, Cladoceran-, and Benthic Invertebrate-PTI values reported across USGS NAWQA/RSQA
+water-quality studies (e.g. Covert et al., 2020, NWQN water years 2013–2017). It exists
+in TaxoTox specifically so results are directly comparable to that published literature
+— unlike the Standard PTI (median ECOTOX LC50/EC50, pooled across a whole taxonomic
+group) or the Benchmark Hazard Index (a cross-invertebrate EPA regulatory value), both
+of which use denominators computed over a different, broader species population than
+Nowell et al.'s taxon-restricted approach.
+
+Nowell et al. tested five candidate procedures for the "sensitive toxicity
+concentration" (STC) denominator and adopted **"Approach B"**, described below; TaxoTox
+implements Approach B only.
+
+### 10.6.2 Formula
+
+For each compound and target taxon, let $n$ be the number of individual (unweighted,
+i.e. not aggregated by species first) ECOTOX toxicity test values (LC50 or EC50)
+available:
+
+$$
+STC = \begin{cases}
+\text{5th percentile of the } n \text{ values} & n > 12 \\
+\min(\text{values}) & 1 \le n \le 12
+\end{cases}
+$$
+
+The $n > 12$ threshold is not arbitrary — Nowell et al. derived it via Monte Carlo
+simulation showing that, for samples of 12 or fewer toxicity tests, the probability of
+the minimum value being a low statistical outlier (below the true 5th percentile of a
+larger hypothetical population) is under 50%, so the minimum can be used directly; above
+12, a directly-computed 5th percentile becomes the more reliable choice. TaxoTox uses
+this threshold and R's default (type-7) quantile interpolation, since the source paper
+does not specify an interpolation method.
+
+$$TU_i = \frac{C_i}{STC_i} \qquad PTI_j = \sum_i TU_{ij}$$
+
+Standard Concentration Addition, identical in form to the Standard PTI — only the
+denominator source differs.
+
+### 10.6.3 Taxon definition and data source
+
+- **Fish**: the full ECOTOX fish population for each compound (same population the
+  Standard PTI's `median_lc50_ng_L` uses — Approach B just computes a different
+  statistic from it).
+- **Cladoceran** (reported under the "crustacean" taxonomic group for compatibility with
+  TaxoTox's existing per-group calculation code): restricted to the 17 cladoceran genera
+  Nowell et al. (2014, Supplementary Appendix C, "Table C.1 PTI taxa") tested —
+  *Acantholeberis, Acroperus, Alona, Alonella, Bosmina, Ceriodaphnia, Chydorus, Daphnia,
+  Diaphanosoma, Disparalona, Eurycercus, Moina, Moinodaphnia, Pleuroxus, Pseudosida,
+  Scapholeberis, Simocephalus* — not TaxoTox's full crustacean group (which spans
+  amphipods, copepods, mysids, and other non-cladoceran crustaceans). Both EC50
+  (immobilization) and LC50 (mortality) endpoints are included, matching Nowell et al.'s
+  treatment of these as equivalent for cladocerans.
+- **Algae**: not computed. Nowell et al.'s method covers fish, cladocerans, and benthic
+  invertebrates only — it was never defined for algae.
+- **Benthic invertebrates**: Nowell et al.'s third taxon is out of scope for this
+  implementation — it spans aquatic insects (e.g. midges, mayflies) that TaxoTox's
+  ECOTOX extraction does not currently pull in at all (only fish/algae/crustacean
+  `ecotox_group`s are queried; see Section 3).
+
+**Known simplification vs. the source method:** Nowell et al. supplemented ECOTOX with
+USEPA OPP aquatic-life benchmark documents and the Pesticide Properties Database (PPDB)
+when ECOTOX data were sparse for a compound. TaxoTox's implementation uses ECOTOX data
+only, consistent with how the rest of TaxoTox is built — coverage will therefore be
+somewhat narrower than the original method's, particularly for compounds with limited
+ECOTOX testing history.
+
+### 10.6.4 Output
+
+Two sheets: `Nowell PTI (Fish)`, `Nowell PTI (Cladoceran)` — column `PTI` (matching
+Nowell/Covert's own terminology, distinct from the Benchmark HI method's `HI` column),
+plus per-compound TU columns.
+
+### 10.6.5 References
+
+- Nowell, L.H., Norman, J.E., Moran, P.W., Martin, J.D., & Stone, W.W. (2014). Pesticide
+  Toxicity Index — a tool for assessing potential toxicity of pesticide mixtures to
+  freshwater aquatic organisms. *Science of the Total Environment*, 476–477, 144–157.
+  https://doi.org/10.1016/j.scitotenv.2013.12.088
+- Covert, S.A., Shoda, M.E., Stackpoole, S.M., & Stone, W.W. (2020). Pesticide mixtures
+  show potential toxicity to aquatic life in U.S. streams, water years 2013–2017.
+  *Science of the Total Environment*, 745, 141285.
+  https://doi.org/10.1016/j.scitotenv.2020.141285
 
 ---
 
