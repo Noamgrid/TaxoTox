@@ -31,8 +31,10 @@ setwd(.script_dir)
 #           species-sensitivity denominator when computing Toxic Units (TU).
 #
 # Prerequisites:
-#   1. Run update_ecotox.R once to download ECOTOX data from the EPA website.
-#   2. The SQLite path on line 42 must match the ECOTOXr cache location.
+#   1. ECOTOX data must be downloaded at least once -- if run interactively,
+#      Step 0a below will offer to do this before continuing.
+#   2. The SQLite path used below (search for dbConnect(RSQLite::SQLite())
+#      must match the ECOTOXr cache location.
 #      Check with: ECOTOXr::get_ecotox_sqlite_file()
 #
 # Frequency : Re-run whenever the ECOTOX database is updated (≈ quarterly).
@@ -114,6 +116,76 @@ library(fst)
 library(tcltk)
 library(ECOTOXr)
 library(ssdtools)
+
+#######################################################################
+# Step 0a: Optional ECOTOX database update
+# -----------------------------------------------------------------------
+# Merged in from the former standalone update_ecotox.R (deleted -- this was
+# the only thing it did beyond re-running this file, and having two entry
+# points was more confusing than one script with an extra optional step).
+# Downloads the latest EPA ECOTOX Knowledgebase release (hundreds of MB,
+# 10-30 min) and rebuilds the local SQLite cache Step 1 below reads from.
+#
+# Unlike every other section in this file, this one does NOT use
+# .ask_run() -- that helper auto-answers "yes" for every section when run
+# non-interactively (Rscript), which is right for the comparatively cheap,
+# idempotent steps elsewhere in this file but wrong here: silently
+# re-downloading a multi-hundred-MB release on every unattended install run
+# would be a real regression, not a convenience. This step only ever
+# prompts when interactive; a non-interactive run always skips it and
+# proceeds with whatever ECOTOX snapshot is already cached (this file's
+# normal ~quarterly-refresh cadence).
+if (interactive()) {
+  ans <- toupper(trimws(readline(
+    "Check for a new ECOTOX release before building the reference table? [Data download, 10-30 min] [y/n]: "
+  )))
+  if (ans == "Y") {
+    message("Downloading latest ECOTOX release...")
+    ECOTOXr::download_ecotox_data()
+    message("ECOTOX database update complete.")
+  }
+} else {
+  message("Step 0a: SKIPPED (non-interactive run) -- using the currently cached ECOTOX database.")
+}
+
+#######################################################################
+# Step 0b: Pending curation check
+# -----------------------------------------------------------------------
+# Compounds encountered during app sessions but not yet in Known_CAS.fst
+# are logged to a Google Sheet (see taxotox_curate.R). Curation itself
+# requires human judgement per compound (Add/Skip/Reject) and can't be
+# automated, so -- same reasoning as Step 0a -- this only ever prompts when
+# interactive; a non-interactive run just prints how many items are
+# waiting and continues, so nothing blocks or hangs waiting for input that
+# will never arrive on an unattended Rscript run.
+{
+  .curation_sheet_id <- Sys.getenv("TAXOTOX_SHEET_ID",
+                                   unset = "1pftfWQNfIStasPqH1CvpDSAH3yHxYmjhggvAwlBaxDA")
+  .n_pending_curation <- tryCatch({
+    library(googlesheets4)
+    key_path <- "taxotox-service.json"
+    if (file.exists(key_path)) gs4_auth(path = key_path) else gs4_auth()
+    nrow(read_sheet(.curation_sheet_id, col_types = "cc"))
+  }, error = function(e) {
+    message("Could not check the curation Google Sheet: ", conditionMessage(e))
+    NA_integer_
+  })
+
+  if (!is.na(.n_pending_curation) && .n_pending_curation > 0) {
+    if (interactive()) {
+      ans <- toupper(trimws(readline(sprintf(
+        "%d compound(s) pending curation in the Google Sheet. Run taxotox_curate.R now? [y/n]: ",
+        .n_pending_curation
+      ))))
+      if (ans == "Y") source("taxotox_curate.R")
+    } else {
+      message(sprintf(
+        "Step 0b: %d compound(s) pending curation in the Google Sheet -- run taxotox_curate.R interactively to review them.",
+        .n_pending_curation
+      ))
+    }
+  }
+}
 
 #######################################################################
 # Step 1–6: Query ECOTOX, normalise units, write final_ecotox_data.fst
@@ -349,7 +421,8 @@ write_fst(final_ecotox_data, "../Data/final_ecotox_data.fst", compress = 50)
 #   hc5_method        – "SSD" | "Model" | "Both" | NA
 #
 # Subsequent steps add: predicted_lc50_ng_L (I-2), moa_group (I-3),
-# benchmark columns (I-6 to I-9), then write_fst() is called at step I-4.
+# benchmark column (I-6), stc_nowell_ng_L (I-10, separate script
+# taxotox_install_nowell.R), then write_fst() is called at step I-4.
 # =============================================================================
 
 # --- 7a: Per-(cas_number, ecotox_group) aggregates --------------------------
@@ -363,97 +436,15 @@ reference <- final_ecotox_data %>%
   )
 
 # --- 7a-ii: Nowell et al. (2014) "Taxon-Sensitive PTI" denominator ----------
-# Sensitive toxicity concentration (STC), "Approach B" from Nowell et al.
-# (2014) Supplementary Information Appendix A, sections 3-4: for each
-# compound's population of individual (unweighted) toxicity test values,
-#   n >  12  ->  STC = 5th percentile of the values
-#   n <= 12  ->  STC = minimum of the values
-# Threshold empirically derived by Nowell et al. via Monte Carlo simulation
-# (not an arbitrary choice) -- see AppA.pdf sec. 4. Percentile interpolation
-# type is not specified in the paper; R's default quantile() (type 7) is used.
-#
-# For fish, this uses the same population as median_lc50_ng_L (all ECOTOX
-# fish records). For crustacean rows, this is INTENTIONALLY a narrower
-# population than median_lc50_ng_L uses: restricted to the 17 cladoceran
-# genera Nowell et al. tested (their Appendix C "Table C.1 PTI taxa"), not
-# all crustacean species. The row stays labelled ecotox_group == "crustacean"
-# for compatibility with app.R's existing per-group filtering, but
-# stc_nowell_ng_L/n_stc_nowell specifically reflect cladoceran-only data.
-# Algae has no equivalent in Nowell et al. (their method covers only fish,
-# cladocerans, and benthic invertebrates) -- no value is computed for algae.
-
-NOWELL_CLADOCERAN_GENERA <- c(
-  "Acantholeberis", "Acroperus", "Alona", "Alonella", "Bosmina",
-  "Ceriodaphnia", "Chydorus", "Daphnia", "Diaphanosoma", "Disparalona",
-  "Eurycercus", "Moina", "Moinodaphnia", "Pleuroxus", "Pseudosida",
-  "Scapholeberis", "Simocephalus"
-)
-
-.nowell_stc <- function(values) {
-  values <- values[!is.na(values) & values > 0]
-  n <- length(values)
-  if (n == 0) return(NA_real_)
-  if (n > 12) as.numeric(quantile(values, probs = 0.05, names = FALSE))
-  else min(values)
-}
-
-# Nowell et al. (2014) main paper Table 1 ("Standard criteria for toxicity
-# test duration, endpoint, and measured effect, by taxonomic group") specifies
-# 96-hour LC50 for fish and 48-hour EC50/LC50 for cladocerans. Most ECOTOX
-# records don't have exposure duration coded at all (majority "NC") --
-# excluding those outright would discard most usable data for a metadata gap,
-# not because the test was actually non-standard. So: keep records with
-# unrecorded duration ("NC"/NA) or matching the standard; exclude only records
-# where a NON-standard duration is explicitly logged.
-.duration_ok <- function(unit, mean_val, standard_hours) {
-  is.na(unit) | unit %in% c("NC", "") | (unit == "h" & mean_val == standard_hours)
-}
-
-# NOTE: a freshwater-only filter (media_type "FW" vs "SW") was tried and
-# reverted -- Nowell et al.'s title says "...to Freshwater Aquatic
-# Organisms", but empirically restricting to media_type=="FW" made the fish
-# fit WORSE (R² 0.813 -> 0.738) rather than better, unlike every other fix
-# here. Likely explanation: excluding saltwater records pushed some compounds
-# below the n>12 percentile threshold, forcing a noisier minimum-based STC.
-# Not reapplying without further investigation.
-
-# Nowell et al. (2014) AppA.pdf sec. 2 is titled "Inclusion of EC50
-# (immobilization) and LC50 values as CLADOCERAN endpoints" -- this EC50
-# special-case is scoped to cladocerans only; no equivalent section exists for
-# fish, meaning fish STC is LC50-only in Nowell's method.
-nowell_fish <- final_ecotox_data %>%
-  filter(ecotox_group == "fish", endpoint == "LC50",
-         .duration_ok(exposure_duration_unit, exposure_duration_mean, 96)) %>%
-  group_by(cas_number) %>%
-  summarise(
-    ecotox_group      = "fish",
-    stc_nowell_ng_L   = .nowell_stc(conc_ng_L),
-    n_stc_nowell      = sum(!is.na(conc_ng_L) & conc_ng_L > 0),
-    .groups = "drop"
-  )
-
-nowell_cladoceran <- final_ecotox_data %>%
-  filter(ecotox_group == "crustacean", genus %in% NOWELL_CLADOCERAN_GENERA) %>%
-  # Nowell et al. (2014) AppA.pdf sec. 2 restrict cladoceran EC50 data to the
-  # immobilization endpoint specifically -- LC50 is kept as-is (mortality is
-  # unambiguous). Without this, chronic/sub-lethal EC50 records (reproduction,
-  # population growth, etc.) ~1000x more sensitive than acute immobilization
-  # leak into the STC. Confirmed empirically for Diazinon: stc_nowell_ng_L went
-  # from 0.323 ng/L (n=112, contaminated) to 239 ng/L (n=80, IMBL-only).
-  filter(endpoint == "LC50" | (endpoint == "EC50" & measurement == "IMBL")) %>%
-  filter(.duration_ok(exposure_duration_unit, exposure_duration_mean, 48)) %>%
-  group_by(cas_number) %>%
-  summarise(
-    ecotox_group      = "crustacean",
-    stc_nowell_ng_L   = .nowell_stc(conc_ng_L),
-    n_stc_nowell      = sum(!is.na(conc_ng_L) & conc_ng_L > 0),
-    .groups = "drop"
-  )
-
-nowell_stc_table <- bind_rows(nowell_fish, nowell_cladoceran)
-
-reference <- reference %>%
-  left_join(nowell_stc_table, by = c("cas_number", "ecotox_group"))
+# stc_nowell_ng_L / n_stc_nowell are NOT computed here. They used to be
+# re-derived from this script's own ECOTOX pull (5th-percentile/minimum STC,
+# duration/measurement filtering, cladoceran-genus restriction) but that
+# diverged substantially from Nowell et al.'s actual published values (e.g.
+# Diazinon fish STC: ~45 ug/L recomputed here vs 85 ug/L published) because
+# Nowell's STC also draws on OPP aquatic-life benchmarks and the Pesticide
+# Properties Database, not ECOTOX alone, and because ECOTOX has been updated
+# since 2014. Run taxotox_install_nowell.R (step I-10) after this script to
+# join Nowell's own published Appendix B values directly instead.
 
 # --- 7b: SSD-based HC5 (hc5_ssd_ng_L) --------------------------------------
 # SLOW step (~15–30 min): fits a log-normal SSD for every compound×group pair
@@ -986,305 +977,17 @@ if (!nzchar(COMPTOX_KEY)) {
 # =============================================================================
 # Step I-3: Mode of Action (MoA) classification
 # -----------------------------------------------------------------------------
-# Populates two columns in taxotox_reference.fst:
-#   moa_group  — broad mechanistic group used to partition compounds in CAMA:
-#                  "narcosis"          baseline toxicity (non-polar or polar narcosis)
-#                  "AChE_inhibition"   acetylcholinesterase inhibitors
-#                                      (organophosphates, carbamates)
-#                  "PSII_inhibition"   Photosystem II inhibitors
-#                                      (triazines, phenylureas, diazinones)
-#                  "pyrethroid"        sodium channel modulators
-#                  "reactive"          unspecific reactive chemicals
-#   moa_source — how the group was assigned:
-#                  "name_heuristic"    matched a chemical name pattern
-#                  "Verhaar_LogKow"    Verhaar classification via LogKow
-#                  "default_narcosis"  no information — conservative default
-#
-# Classification strategy (applied in priority order):
-#   1. Chemical name pattern matching against preferred_name from CompTox
-#      and chemical_name from ECOTOX — catches major pesticide classes reliably
-#   2. LogKow-based Verhaar classification (Verhaar et al. 1992) for residuals
-#      Polar narcotics (LogKow < 2) and non-polar narcotics (LogKow ≥ 2)
-#      both map to "narcosis"; reactive class not classified without SMARTS
-#   3. Default: "narcosis" (most common aquatic MoA, most conservative for CAMA)
-#
-# LogKow is fetched from the CompTox predicted property endpoint
-# (propName = "LogKow: Octanol-Water"). The dtxsid_map is reloaded from
-# Data/dtxsid_map.csv written at the end of I-2.
-#
-# Reference: Verhaar, H.J.M., van Leeuwen, C.J., Hermens, J.L.M. (1992).
-#   Classifying environmental pollutants. Chemosphere, 25(4), 471-491.
+# moa_group / moa_source are NOT computed here. They used to be a ~100-name
+# regex heuristic (organophosphate/carbamate/triazine/phenylurea/pyrethroid
+# name patterns) plus a LogKow/Verhaar check that contributed nothing in
+# practice, defaulting everything else to "narcosis" -- meaning ~97% of
+# compounds got a conservative placeholder, not a real classification. Run
+# taxotox_install_moa.R after this script to join a real, externally curated
+# Mode-of-Action classification instead: Kramer et al. (2024, Sci. Data,
+# https://doi.org/10.1038/s41597-023-02904-7), freely available at
+# https://doi.org/10.5281/zenodo.10071824. Unclassified compounds get an
+# explicit moa_group = "unknown" rather than being folded into "narcosis".
 # =============================================================================
-
-if (!nzchar(tryCatch(Sys.getenv("COMPTOX_API_KEY", unset = ""),
-                     error = function(e) ""))) {
-  message("Step I-3: SKIPPED — CompTox API key not found (needed for LogKow fetch).")
-} else if (!file.exists("../Data/taxotox_reference.fst")) {
-  message("Step I-3: SKIPPED — taxotox_reference.fst not found. Run I-2 first.")
-} else if (!.ask_run("S_i3_moa",
-    "Mode of Action classification — LogKow fetch + name heuristics (~2\u20135 min)")) {
-  message("S_i3_moa skipped — existing moa_group values (if any) preserved.")
-} else {
-
-  library(httr)
-  library(jsonlite)
-
-  # Reuse helpers and key from I-2 scope if available; otherwise rebuild
-  if (!exists("COMPTOX_KEY") || !nzchar(COMPTOX_KEY)) {
-    COMPTOX_KEY <- Sys.getenv("COMPTOX_API_KEY", unset = "")
-    if (!nzchar(COMPTOX_KEY) && file.exists("comptox_api_key.txt"))
-      COMPTOX_KEY <- trimws(readLines("comptox_api_key.txt", n = 1L))
-  }
-  if (!exists("COMPTOX_BASE")) COMPTOX_BASE <- "https://comptox.epa.gov/ctx-api"
-  if (!exists(".ctox_get")) {
-    .ctox_get <- function(path, ..., max_tries = 3L) {
-      url <- paste0(COMPTOX_BASE, path)
-      for (i in seq_len(max_tries)) {
-        resp <- tryCatch(
-          GET(url, add_headers("x-api-key" = COMPTOX_KEY, "accept" = "application/json"), ...),
-          error = function(e) NULL
-        )
-        if (!is.null(resp) && status_code(resp) == 200L) return(resp)
-        if (i < max_tries) Sys.sleep(i)
-      }
-      NULL
-    }
-  }
-  if (!exists(".ctox_post")) {
-    .ctox_post <- function(path, body_vec, ..., max_tries = 3L) {
-      url  <- paste0(COMPTOX_BASE, path)
-      body <- toJSON(body_vec, auto_unbox = FALSE)
-      for (i in seq_len(max_tries)) {
-        resp <- tryCatch(
-          POST(url,
-               add_headers("x-api-key"    = COMPTOX_KEY,
-                           "accept"       = "application/json",
-                           "content-type" = "application/json"),
-               body = body, encode = "raw", ...),
-          error = function(e) NULL
-        )
-        if (!is.null(resp) && status_code(resp) == 200L) return(resp)
-        if (i < max_tries) Sys.sleep(i)
-      }
-      NULL
-    }
-  }
-  if (!exists("%||%")) `%||%` <- function(a, b) if (!is.null(a) && length(a) > 0) a else b
-
-  # --- I-3a: Load reference and dtxsid_map -----------------------------------
-
-  reference <- read.fst("../Data/taxotox_reference.fst", as.data.table = FALSE) %>%
-    mutate(cas_number = as.character(cas_number))
-
-  if (file.exists("../Data/dtxsid_map.csv")) {
-    dtxsid_map_i3 <- read.csv("../Data/dtxsid_map.csv", stringsAsFactors = FALSE)
-    message(sprintf("  Loaded dtxsid_map: %d entries (%d with DTXSID)",
-                    nrow(dtxsid_map_i3), sum(!is.na(dtxsid_map_i3$dtxsid))))
-  } else {
-    # dtxsid_map.csv is written at the end of I-2 but may be absent if I-2 ran
-    # before that save was added.  Re-derive DTXSID from Known_CAS inline.
-    message("dtxsid_map.csv not found — running CAS\u2192DTXSID lookup inline...")
-    known_cas_i3 <- read.fst("../Data/Known_CAS.fst", as.data.table = FALSE)
-    cas_col_i3   <- intersect(c("cas_number", "casrn", "CAS", "CASRN"), names(known_cas_i3))[1]
-    target_cas_i3 <- unique(as.character(known_cas_i3[[cas_col_i3]]))
-    message(sprintf("  %d unique CAS numbers to resolve", length(target_cas_i3)))
-
-    dtxsid_map_i3 <- purrr::map_dfr(seq_along(target_cas_i3), function(i) {
-      cas <- target_cas_i3[i]
-      if (i %% 100 == 0) message(sprintf("  %d / %d", i, length(target_cas_i3)))
-      resp <- .ctox_get(paste0("/chemical/search/equal/",
-                               utils::URLencode(cas, reserved = TRUE)))
-      if (is.null(resp))
-        return(tibble(cas_number = cas, dtxsid = NA_character_, preferred_name = NA_character_))
-      parsed <- tryCatch(
-        fromJSON(content(resp, as = "text", encoding = "UTF-8"), simplifyVector = TRUE),
-        error = function(e) NULL
-      )
-      if (is.null(parsed) || nrow(parsed) == 0)
-        return(tibble(cas_number = cas, dtxsid = NA_character_, preferred_name = NA_character_))
-      hit <- parsed[!is.na(parsed$casrn) & parsed$casrn == cas, ]
-      if (nrow(hit) == 0) hit <- parsed[1, ]
-      tibble(cas_number     = cas,
-             dtxsid         = as.character(hit$dtxsid[1]        %||% NA),
-             preferred_name = as.character(hit$preferredName[1] %||% NA))
-    })
-    write.csv(dtxsid_map_i3, "../Data/dtxsid_map.csv", row.names = FALSE)
-    message(sprintf("  DTXSID resolved: %d / %d — saved to dtxsid_map.csv",
-                    sum(!is.na(dtxsid_map_i3$dtxsid)), nrow(dtxsid_map_i3)))
-  }
-
-  all_dtxsids_i3 <- dtxsid_map_i3$dtxsid[!is.na(dtxsid_map_i3$dtxsid)]
-
-  # --- I-3b: Fetch LogKow from CompTox predicted property endpoint -----------
-
-  PROP_LOGKOW <- "LogKow: Octanol-Water"
-
-  message("Step I-3b: Fetching LogKow from CompTox predicted properties...")
-
-  .fetch_logkow <- function(dtxsids, batch_size = 1000L) {
-    batches <- split(dtxsids, ceiling(seq_along(dtxsids) / batch_size))
-    purrr::map_dfr(seq_along(batches), function(i) {
-      batch <- batches[[i]]
-      message(sprintf("  LogKow batch %d / %d (%d DTXSIDs)", i, length(batches), length(batch)))
-      resp <- .ctox_post("/chemical/property/predicted/search/by-dtxsid/", batch)
-      if (is.null(resp)) { warning(sprintf("  LogKow batch %d failed.", i)); return(tibble()) }
-      parsed <- tryCatch(
-        fromJSON(content(resp, as = "text", encoding = "UTF-8"), simplifyVector = TRUE),
-        error = function(e) NULL
-      )
-      if (is.null(parsed) || nrow(parsed) == 0) return(tibble())
-      rows <- parsed[parsed$propName == PROP_LOGKOW, c("dtxsid", "propValue")]
-      if (nrow(rows) == 0) return(tibble())
-      # Take first value per DTXSID (multiple model sources may be returned)
-      tibble(dtxsid = rows$dtxsid, logkow = as.numeric(rows$propValue)) %>%
-        group_by(dtxsid) %>% slice(1) %>% ungroup()
-    })
-  }
-
-  if (length(all_dtxsids_i3) == 0) {
-    logkow_table <- tibble(dtxsid = character(), logkow = numeric())
-    message("  No DTXSIDs available — LogKow table empty.")
-  } else {
-    logkow_table <- .fetch_logkow(all_dtxsids_i3)
-    message(sprintf("  LogKow retrieved for %d / %d unique DTXSIDs",
-                    n_distinct(logkow_table$dtxsid), length(all_dtxsids_i3)))
-  }
-
-  # Merge LogKow back to dtxsid_map, then to cas_number.
-  # Deduplicate by cas_number (keep first): dtxsid_map_i3 may have multiple
-  # CAS numbers mapping to the same DTXSID, creating many-to-many with logkow_table.
-  cas_logkow <- dtxsid_map_i3 %>%
-    left_join(logkow_table, by = "dtxsid") %>%
-    select(cas_number, preferred_name, any_of("logkow")) %>%
-    { if (!"logkow" %in% names(.)) mutate(., logkow = NA_real_) else . } %>%
-    group_by(cas_number) %>% slice(1) %>% ungroup()
-
-  # --- I-3c: Chemical name pattern matching ----------------------------------
-  # Matches preferred_name (CompTox) and chemical_name (ECOTOX) against
-  # known chemical class patterns. Applied before LogKow-based classification.
-  # Patterns are case-insensitive and target the most common aquatic toxicants.
-
-  .classify_by_name <- function(name) {
-    if (is.na(name) || !nzchar(name)) return(NA_character_)
-    n <- tolower(name)
-
-    # Acetylcholinesterase (AChE) inhibitors
-    # -- Organophosphates: phosphate/phosphorothioate/phosphonothioate esters
-    if (grepl("chlorpyrifos|malathion|diazinon|parathion|azinphos|dimethoate|
-               phosmet|fenthion|methidathion|profenofos|triazophos|phorate|
-               disulfoton|terbufos|acephate|omethoate|methamidophos|
-               dichlorvos|trichlorfon|naled|ethoprop|cadusafos|
-               pirimiphos|fenitrothion|temephos|isazofos|quinalphos|
-               monocrotophos|phosphamidon|vamidothion|demeton",
-              n, perl = TRUE)) return("AChE_inhibition")
-    # -- Carbamates
-    if (grepl("carbofuran|carbaryl|methomyl|aldicarb|oxamyl|pirimicarb|
-               thiodicarb|fenobucarb|propoxur|bendiocarb|aminocarb|
-               formetanate|alanycarb|furathiocarb",
-              n, perl = TRUE)) return("AChE_inhibition")
-
-    # Photosystem II (PSII) inhibitors
-    # -- Triazines
-    if (grepl("atrazine|simazine|cyanazine|terbuthylazine|prometryn|
-               ametryn|terbutryn|propazine|desmetryn|atraton|
-               hexazinone|metribuzin",
-              n, perl = TRUE)) return("PSII_inhibition")
-    # -- Phenylureas
-    if (grepl("diuron|isoproturon|linuron|chlortoluron|metobromuron|
-               monolinuron|metoxuron|fluometuron|tebuthiuron|
-               chlorbromuron|buturon",
-              n, perl = TRUE)) return("PSII_inhibition")
-    # -- Other PSII inhibitors
-    if (grepl("bromacil|terbacil|lenacil|bentazon|ioxynil|bromoxynil|
-               metribuzin|amicarbazone|tembotrione",
-              n, perl = TRUE)) return("PSII_inhibition")
-
-    # Pyrethroids (sodium channel modulators)
-    if (grepl("permethrin|cypermethrin|deltamethrin|cyhalothrin|
-               bifenthrin|fenvalerate|esfenvalerate|cyfluthrin|
-               flucythrinate|fenpropathrin|tralomethrin|
-               tefluthrin|acrinathrin|etofenprox|tau-fluvalinate|
-               resmethrin|allethrin|tetramethrin|prallethrin|
-               pyrethrin|pyrethroid|pyrethr",
-              n, perl = TRUE)) return("pyrethroid")
-
-    # Reactive chemicals (unspecific electrophilic reactivity)
-    # Epoxides, Michael acceptors, alpha-beta unsaturated carbonyls
-    if (grepl("epoxide|acrylate|acrolein|formaldehyde|
-               chloroacetamide|methyl vinyl|isocyanate|
-               2-chloroacet|alpha-chloro",
-              n, perl = TRUE)) return("reactive")
-
-    NA_character_  # no pattern matched
-  }
-
-  # --- I-3d: Combine name patterns and LogKow into moa assignments ----------
-
-  # Build a per-cas_number MoA table (one entry per compound, not per group)
-  moa_by_cas <- reference %>%
-    select(cas_number, chemical_name) %>%
-    distinct() %>%
-    left_join(cas_logkow %>% select(cas_number, preferred_name, logkow),
-              by = "cas_number") %>%
-    rowwise() %>%
-    mutate(
-      # Try name patterns on both ECOTOX name and CompTox preferred name
-      moa_from_ecotox_name  = .classify_by_name(chemical_name),
-      moa_from_comptox_name = .classify_by_name(preferred_name),
-
-      # Priority: CompTox preferred name > ECOTOX chemical name
-      moa_from_name = dplyr::coalesce(moa_from_comptox_name, moa_from_ecotox_name),
-
-      # LogKow-based Verhaar classification for residuals
-      # Verhaar class 1 (LogKow ≥ 2): non-polar narcosis
-      # Verhaar class 2 (LogKow < 2):  polar narcosis
-      # Both map to "narcosis" in CAMA (same mechanism, different potency)
-      moa_from_logkow = case_when(
-        !is.na(logkow) ~ "narcosis",
-        TRUE            ~ NA_character_
-      ),
-
-      # Final assignment (priority: name > LogKow > default)
-      moa_group = dplyr::coalesce(moa_from_name, moa_from_logkow, "narcosis"),
-
-      moa_source = case_when(
-        !is.na(moa_from_name)   ~ "name_heuristic",
-        !is.na(moa_from_logkow) ~ "Verhaar_LogKow",
-        TRUE                    ~ "default_narcosis"
-      )
-    ) %>%
-    ungroup() %>%
-    select(cas_number, moa_group, moa_source) %>%
-    # Deduplicate: one row per cas_number (guards against duplicate cas_logkow rows)
-    group_by(cas_number) %>% slice(1) %>% ungroup()
-
-  # Summarise coverage
-  message("Step I-3d: Mode of Action classification summary:")
-  moa_by_cas %>%
-    count(moa_group, moa_source) %>%
-    arrange(desc(n)) %>%
-    { message(paste(capture.output(print(as.data.frame(.))), collapse = "\n")) }
-
-  # --- I-3e: Join MoA into reference and write fst --------------------------
-
-  # moa_group and moa_source apply per compound (same across all ecotox_groups).
-  # Drop any existing moa columns before joining (handles re-runs cleanly).
-  reference <- reference %>%
-    select(-any_of(c("moa_group", "moa_source"))) %>%
-    left_join(moa_by_cas, by = "cas_number")
-
-  message(sprintf(
-    "Step I-3 complete: moa_group populated for %d / %d reference rows.",
-    sum(!is.na(reference$moa_group)), nrow(reference)
-  ))
-
-  write_fst(reference, "../Data/taxotox_reference.fst", compress = 50)
-  message(sprintf("taxotox_reference.fst updated (post-MoA): %d rows, %d columns.",
-                  nrow(reference), ncol(reference)))
-
-  .mark_done("S_i3_moa")
-
-}  # end I-3
 
 # =============================================================================
 # Step I-4: Final write of taxotox_reference.fst
@@ -1295,8 +998,8 @@ if (!nzchar(tryCatch(Sys.getenv("COMPTOX_API_KEY", unset = ""),
 # with NA, and writes the final file.
 #
 # Running this step is safe at any point — it never overwrites data, only
-# reorders and canonicalises columns. Re-running after adding benchmark
-# columns (steps I-6 to I-11) will produce a file with those columns too.
+# reorders and canonicalises columns. Re-running after adding the benchmark
+# column (step I-6) will produce a file with that column too.
 #
 # Canonical column order:
 #   Identity    : cas_number, ecotox_group, chemical_name
@@ -1305,9 +1008,9 @@ if (!nzchar(tryCatch(Sys.getenv("COMPTOX_API_KEY", unset = ""),
 #   CompTox     : predicted_lc50_ng_L, lc50_source
 #   Mode of action: moa_group, moa_source
 #   Benchmarks  : benchmark_usepa_fish_acute_ng_L, _crust_acute_ng_L,
-#                 _algae_acute_ng_L, benchmark_eu_eqs_aa_marine_ng_L,
-#                 benchmark_au_anzg_fresh_ng_L, _marine_ng_L,
-#                 benchmark_ca_ccme_fresh_lt_ng_L
+#                 _algae_acute_ng_L (EU EQS / AU ANZG / CA CCME were removed
+#                 due to low compound coverage -- see
+#                 taxotox_install_benchmarks.R)
 # =============================================================================
 
 if (.ask_run("S_i4_finalise",
@@ -1332,14 +1035,10 @@ if (.ask_run("S_i4_finalise",
     "predicted_lc50_ng_L", "lc50_source",
     # Mode of Action
     "moa_group", "moa_source",
-    # Benchmarks (I-6 to I-9 — NA until those steps run)
+    # Benchmarks (I-6 — NA until that step runs)
     "benchmark_usepa_fish_acute_ng_L",
     "benchmark_usepa_crust_acute_ng_L",
-    "benchmark_usepa_algae_acute_ng_L",
-    "benchmark_eu_eqs_aa_marine_ng_L",
-    "benchmark_au_anzg_fresh_ng_L",
-    "benchmark_au_anzg_marine_ng_L",
-    "benchmark_ca_ccme_fresh_lt_ng_L"
+    "benchmark_usepa_algae_acute_ng_L"
   )
 
   # Add any canonical columns not yet present as NA
@@ -1369,6 +1068,45 @@ if (.ask_run("S_i4_finalise",
   .mark_done("S_i4_finalise")
 
 }  # end I-4
+
+# =============================================================================
+# Step I-12: Join satellite reference tables
+# -----------------------------------------------------------------------------
+# Runs the three standalone scripts that join external published datasets
+# into taxotox_reference.fst, so a single taxotox_install.R run produces a
+# complete reference table without separately remembering to run each one.
+# Each is also fully runnable on its own afterward (see its own header) --
+# e.g. to refresh just one source without re-running everything above.
+# Order between the three doesn't matter: each only adds/overwrites its own
+# columns, and none of them touches the others' columns.
+#   taxotox_install_benchmarks.R -- US EPA aquatic benchmarks (I-6)
+#   taxotox_install_nowell.R     -- Nowell et al. (2014) Taxon-Sensitive PTI
+#   taxotox_install_moa.R        -- Kramer et al. (2024) Mode of Action
+# =============================================================================
+
+if (.ask_run("S_i12_benchmarks",
+    "Join US EPA aquatic benchmarks (taxotox_install_benchmarks.R)")) {
+  source("taxotox_install_benchmarks.R")
+  .mark_done("S_i12_benchmarks")
+} else {
+  message("S_i12_benchmarks skipped.")
+}
+
+if (.ask_run("S_i12_nowell",
+    "Join Nowell et al. (2014) Taxon-Sensitive PTI values (taxotox_install_nowell.R)")) {
+  source("taxotox_install_nowell.R")
+  .mark_done("S_i12_nowell")
+} else {
+  message("S_i12_nowell skipped.")
+}
+
+if (.ask_run("S_i12_moa",
+    "Join Kramer et al. (2024) Mode of Action classification (taxotox_install_moa.R)")) {
+  source("taxotox_install_moa.R")
+  .mark_done("S_i12_moa")
+} else {
+  message("S_i12_moa skipped.")
+}
 
 #######################################################################
 

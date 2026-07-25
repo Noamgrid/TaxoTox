@@ -12,28 +12,29 @@
 setwd(.script_dir)
 
 # =============================================================================
-# taxotox_install_benchmarks.R  (steps I-5 through I-11)
+# taxotox_install_benchmarks.R  (step I-6)
 # -----------------------------------------------------------------------------
-# Purpose : Parse national aquatic benchmark tables and join them into
+# Purpose : Parse the US EPA aquatic benchmark table and join it into
 #           taxotox_reference.fst as denominator columns for the
 #           Benchmark Hazard Index method.
 #
-# Sources :
-#   I-6  Data/USEPA_aquatic_benchmarks.csv   — US EPA Aquatic Life Benchmarks
-#   I-7  Data/EUEPA_aquatic_benchmarks.csv   — EU WFD Directive 2013/39/EU
-#   I-8  Data/Australia_aquatic_benchmarks.csv — ANZG 2018 / ANZECC 2000
-#   I-9  Data/Canada_aquatic_benchmarks.csv  — CCME Water Quality Guidelines
+# Source  :
+#   I-6  Data/USEPA_aquatic_benchmarks.csv — US EPA Aquatic Life Benchmarks
+#
+# EU WFD EQS, Australia ANZG, and Canada CCME (formerly steps I-7/I-8/I-9)
+# were removed: compound coverage in TaxoTox's reference table was too low to
+# be useful (EU EQS ~0.9%, AU ANZG ~1.3-2.8%, CA CCME ~2.1%, vs. US EPA's
+# ~8.6-10.4%). Data/EUEPA_aquatic_benchmarks.csv, Data/Australia_aquatic_
+# benchmarks.csv, and Data/Canada_aquatic_benchmarks.csv are no longer read
+# by this script but were left in Data/ in case coverage improves enough in a
+# future source revision to reconsider.
 #
 # All source values are in µg/L; output stored as ng/L (× 1000).
 #
-# Output  : Updates ../Data/taxotox_reference.fst in place with 7 new columns:
+# Output  : Updates ../Data/taxotox_reference.fst in place with 3 columns:
 #   benchmark_usepa_fish_acute_ng_L
 #   benchmark_usepa_crust_acute_ng_L
 #   benchmark_usepa_algae_acute_ng_L
-#   benchmark_eu_eqs_aa_marine_ng_L
-#   benchmark_au_anzg_fresh_ng_L
-#   benchmark_au_anzg_marine_ng_L
-#   benchmark_ca_ccme_fresh_lt_ng_L
 #
 # Denominator selection rationale (documented in TaxoTox_Technical_Methods.md):
 #   US EPA  : acute columns only (fish = raw col 4, invertebrate = raw col 8,
@@ -41,10 +42,6 @@ setwd(.script_dir)
 #             verified against EPA's live benchmarks page, NOT the same as
 #             the positions the duplicate-header auto-rename suggests)
 #             Chronic columns are retained in source but not used as TU denominators
-#   EU EQS  : Annual Average EQS — the only value provided in this CSV extract
-#             Reflects estuarine/coastal monitoring (primary TaxoTox use case)
-#   AU ANZG : LOSP 95% (95% species protection level) — recommended default
-#   CA CCME : Freshwater Long-Term (chronic) guideline
 #
 # Prerequisites : taxotox_reference.fst must exist (run taxotox_install.R first)
 # Authors : Yair Suari & Noam Gridish, 2025
@@ -230,148 +227,26 @@ message(sprintf("    algae acute : %d non-NA", sum(!is.na(usepa$benchmark_usepa_
 message("  Sanity check passed: USEPA column mapping verified against Chlorpyrifos and Dichlorvos reference values.")
 
 # =============================================================================
-# I-7  EU WFD Environmental Quality Standards (Directive 2013/39/EU)
+# Join US EPA benchmarks into taxotox_reference.fst
 # =============================================================================
-message("\n--- I-7: EU WFD Environmental Quality Standards ---")
-
-eu_path <- "../Data/EUEPA_aquatic_benchmarks.csv"
-if (!file.exists(eu_path)) stop("Missing: ", eu_path)
-
-# File structure: 4 rows of legend, then row 5 = column header, data from row 6.
-# Only 4 columns present: name, sub-name/blank, CAS, AA-EQS value (µg/L).
-# This CSV contains only the single AA-EQS value — no separate inland/marine split.
-eu_raw <- read.csv(eu_path, skip = 4, header = FALSE, stringsAsFactors = FALSE,
-                   col.names = c("name", "subname", "cas_number", "aa_eqs_raw"))
-
-eu <- eu_raw %>%
-  slice(-1) %>%   # drop the column-header row now stored as data
-  mutate(
-    cas_number = trimws(cas_number),
-    # Prefer sub-name for grouped entries (e.g. aldrin, dieldrin listed under parent)
-    cas_number = ifelse(nzchar(trimws(subname)) & !nzchar(cas_number),
-                        NA_character_, cas_number)
-  ) %>%
-  filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
-  mutate(
-    cas_number = gsub("-", "", cas_number),
-    benchmark_eu_eqs_aa_marine_ng_L = .parse_benchmark(aa_eqs_raw) * UG_TO_NG
-  ) %>%
-  select(cas_number, benchmark_eu_eqs_aa_marine_ng_L) %>%
-  group_by(cas_number) %>%
-  slice_max(order_by = !is.na(benchmark_eu_eqs_aa_marine_ng_L),
-            n = 1, with_ties = FALSE) %>%
-  ungroup()
-
-message(sprintf("  EU EQS: %d compounds parsed, %d with AA-EQS value",
-                nrow(eu), sum(!is.na(eu$benchmark_eu_eqs_aa_marine_ng_L))))
-
-# =============================================================================
-# I-8  Australia ANZG / ANZECC Default Guideline Values
-# =============================================================================
-message("\n--- I-8: Australia ANZG Guideline Values ---")
-
-au_path <- "../Data/Australia_aquatic_benchmarks.csv"
-if (!file.exists(au_path)) stop("Missing: ", au_path)
-
-au_raw <- read.csv(au_path, stringsAsFactors = FALSE, check.names = TRUE)
-
-# Each compound has two rows: Freshwater and Marine Water.
-# Use LOSP 95% (95% species protection) — column Tox.LOSP.95.
-# Unit column (Tox.LOSP.Unit) should be µg/L for all rows.
-
-au_fresh <- au_raw %>%
-  filter(trimws(Tox.Medium) == "Freshwater") %>%
-  mutate(
-    cas_number = trimws(Tox.CAS),
-    benchmark_au_anzg_fresh_ng_L = .parse_benchmark(Tox.LOSP.95) * UG_TO_NG
-  ) %>%
-  filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
-  mutate(cas_number = gsub("-", "", cas_number)) %>%
-  select(cas_number, benchmark_au_anzg_fresh_ng_L) %>%
-  group_by(cas_number) %>%
-  slice_max(order_by = !is.na(benchmark_au_anzg_fresh_ng_L),
-            n = 1, with_ties = FALSE) %>%
-  ungroup()
-
-au_marine <- au_raw %>%
-  filter(trimws(Tox.Medium) == "Marine Water") %>%
-  mutate(
-    cas_number = trimws(Tox.CAS),
-    benchmark_au_anzg_marine_ng_L = .parse_benchmark(Tox.LOSP.95) * UG_TO_NG
-  ) %>%
-  filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
-  mutate(cas_number = gsub("-", "", cas_number)) %>%
-  select(cas_number, benchmark_au_anzg_marine_ng_L) %>%
-  group_by(cas_number) %>%
-  slice_max(order_by = !is.na(benchmark_au_anzg_marine_ng_L),
-            n = 1, with_ties = FALSE) %>%
-  ungroup()
-
-au <- full_join(au_fresh, au_marine, by = "cas_number")
-
-message(sprintf("  AU ANZG: %d compounds total", nrow(au)))
-message(sprintf("    freshwater LOSP95 : %d non-NA", sum(!is.na(au$benchmark_au_anzg_fresh_ng_L))))
-message(sprintf("    marine LOSP95     : %d non-NA", sum(!is.na(au$benchmark_au_anzg_marine_ng_L))))
-
-# =============================================================================
-# I-9  Canada CCME Water Quality Guidelines
-# =============================================================================
-message("\n--- I-9: Canada CCME Water Quality Guidelines ---")
-
-ca_path <- "../Data/Canada_aquatic_benchmarks.csv"
-if (!file.exists(ca_path)) stop("Missing: ", ca_path)
-
-ca_raw <- read.csv(ca_path, stringsAsFactors = FALSE, check.names = TRUE)
-
-# Use freshwater long-term (chronic) guideline.
-# Column name after check.names: X.Freshwater..Concentration..µg.L..Long.Term.
-# Non-numeric values ("No data", "NRG", "Insufficient data") → NA via .parse_benchmark.
-
-lt_col <- grep("Freshwater.*Long.Term", names(ca_raw), value = TRUE)[1]
-if (is.na(lt_col)) stop("Cannot find Freshwater Long Term column in Canada CSV. Names: ",
-                         paste(names(ca_raw), collapse = ", "))
-message(sprintf("  Using column: %s", lt_col))
-
-ca <- ca_raw %>%
-  mutate(
-    cas_number = trimws(CASRN),
-    benchmark_ca_ccme_fresh_lt_ng_L = .parse_benchmark(.data[[lt_col]]) * UG_TO_NG
-  ) %>%
-  filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
-  mutate(cas_number = gsub("-", "", cas_number)) %>%
-  select(cas_number, benchmark_ca_ccme_fresh_lt_ng_L) %>%
-  group_by(cas_number) %>%
-  slice_max(order_by = !is.na(benchmark_ca_ccme_fresh_lt_ng_L),
-            n = 1, with_ties = FALSE) %>%
-  ungroup()
-
-message(sprintf("  CA CCME: %d compounds parsed, %d with long-term value",
-                nrow(ca), sum(!is.na(ca$benchmark_ca_ccme_fresh_lt_ng_L))))
-
-# =============================================================================
-# I-11  Join all benchmarks into taxotox_reference.fst
-# =============================================================================
-message("\n--- I-11: Joining benchmarks into taxotox_reference.fst ---")
+message("\n--- Joining US EPA benchmarks into taxotox_reference.fst ---")
 
 ref <- read.fst("../Data/taxotox_reference.fst", as.data.table = FALSE) %>%
   mutate(cas_number = as.character(cas_number))
 
-# Drop any existing benchmark columns (safe re-run)
+# Drop any existing benchmark columns (safe re-run) -- includes the retired EU
+# EQS / AU ANZG / CA CCME columns so a re-run also cleans up a reference table
+# built before they were removed, not just adds the current US EPA ones.
 benchmark_cols <- c("benchmark_usepa_fish_acute_ng_L",
                     "benchmark_usepa_crust_acute_ng_L",
-                    "benchmark_usepa_algae_acute_ng_L",
-                    "benchmark_eu_eqs_aa_marine_ng_L",
-                    "benchmark_au_anzg_fresh_ng_L",
-                    "benchmark_au_anzg_marine_ng_L",
-                    "benchmark_ca_ccme_fresh_lt_ng_L")
-ref <- ref %>% select(-any_of(benchmark_cols))
+                    "benchmark_usepa_algae_acute_ng_L")
+retired_benchmark_cols <- c("benchmark_eu_eqs_aa_marine_ng_L",
+                            "benchmark_au_anzg_fresh_ng_L",
+                            "benchmark_au_anzg_marine_ng_L",
+                            "benchmark_ca_ccme_fresh_lt_ng_L")
+ref <- ref %>% select(-any_of(c(benchmark_cols, retired_benchmark_cols)))
 
-# Join one at a time — all are one-row-per-cas_number tables
-ref <- ref %>%
-  left_join(usepa, by = "cas_number") %>%
-  left_join(eu,    by = "cas_number") %>%
-  left_join(au,    by = "cas_number") %>%
-  left_join(ca,    by = "cas_number")
+ref <- ref %>% left_join(usepa, by = "cas_number")
 
 # Coverage report
 message("\nBenchmark coverage in reference table:")

@@ -6,7 +6,8 @@
 #           have the raw ECOTOX files on disk and want to (re)build the SQLite
 #           cache without re-downloading.
 #
-#           For a combined download + build, use update_ecotox.R instead.
+#           For a combined download + build, use Step 0a of taxotox_install.R
+#           instead (run it interactively for the prompt to appear).
 #
 # Input   : ../Data/ecotox_data/  — directory containing ECOTOX ASCII files
 #           (results.txt, tests.txt, species.txt, chemicals.txt, etc.)

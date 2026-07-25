@@ -2,7 +2,7 @@
 
 > **Purpose**: Citable methods reference for the TaxoTox paper.
 > Sections are added incrementally as each feature is implemented.
-> Last updated: 2026-04-07
+> Last updated: 2026-07-23
 
 ---
 
@@ -53,17 +53,13 @@ the production server.
 | `hc5_method` | character | `"SSD"` / `"Scaled"` / `"Both"` / `NA` |
 | `predicted_lc50_ng_L` | numeric | CompTox/OPERA model prediction (ng/L); fish and crustacean only |
 | `lc50_source` | character | `"ECOTOX_median"` / `"CompTox_predicted"` / `"Both"` / `NA` |
-| `moa_group` | character | Mode of action group (see Section 8) |
-| `moa_source` | character | Source of Mode of Action classification: `"name_heuristic"` / `"Verhaar_LogKow"` / `"default_narcosis"` |
+| `moa_group` | character | Mode of action group from Kramer et al. (2024); `"unknown"` if unclassified (see Section 8) |
+| `moa_source` | character | Source of Mode of Action classification: `"Kramer2024"` / `"unknown_in_Kramer2024"` / `"not_in_Kramer2024"` |
 | `benchmark_usepa_fish_acute_ng_L` | numeric | US EPA — freshwater fish, acute (ng/L) |
 | `benchmark_usepa_crust_acute_ng_L` | numeric | US EPA — freshwater invertebrate, acute (ng/L) |
 | `benchmark_usepa_algae_acute_ng_L` | numeric | US EPA — nonvascular plant (algae), acute (ng/L) |
-| `benchmark_eu_eqs_aa_marine_ng_L` | numeric | EU Water Framework Directive — Annual Average Environmental Quality Standard for marine/estuarine waters (ng/L) |
-| `benchmark_au_anzg_marine_ng_L` | numeric | Australia ANZG — marine water, 95% species protection (ng/L) |
-| `benchmark_au_anzg_fresh_ng_L` | numeric | Australia ANZG — freshwater, 95% species protection (ng/L) |
-| `benchmark_ca_ccme_fresh_lt_ng_L` | numeric | Canada CCME — freshwater long-term (chronic) guideline (ng/L) |
-| `stc_nowell_ng_L` | numeric | Nowell et al. (2014) sensitive toxicity concentration (ng/L); fish = full fish population, crustacean row = cladoceran-genus-restricted only (see Section 10.6) |
-| `n_stc_nowell` | integer | Number of toxicity test values behind `stc_nowell_ng_L` |
+| `stc_nowell_ng_L` | numeric | Nowell et al. (2014) sensitive toxicity concentration, read directly from their published Appendix B table (ng/L); crustacean row = cladoceran-genus-restricted only (see Section 10.6) |
+| `n_stc_nowell` | integer | Nowell et al.'s published "No. bioassays" count behind `stc_nowell_ng_L` |
 
 ---
 
@@ -267,14 +263,14 @@ where $C_i$ is the measured concentration of compound $i$ and $BM_i$ is the sele
 national benchmark. The interpretation thresholds are the same as for Pollution Toxicity
 Index: $HI \geq 1$ indicates exceedance of the benchmark, $HI < 0.1$ indicates low risk.
 
-The method is implemented for four national frameworks, selectable independently in the
-Advanced Assessment panel of the app.
+The method currently implements the US EPA framework only (see Section 6.3 for why the
+other three national frameworks TaxoTox previously supported were removed).
 
-### 6.2 Benchmark Sources
+### 6.2 Benchmark Source
 
 All benchmark values are stored in `taxotox_reference.fst` as columns in ng/L.
-Source files are in `Data/` and are parsed by `Code/taxotox_install_benchmarks.R`.
-All source values are in µg/L; multiplication by 1000 converts to ng/L.
+The source file is in `Data/` and is parsed by `Code/taxotox_install_benchmarks.R`.
+Source values are in µg/L; multiplication by 1000 converts to ng/L.
 
 #### US EPA Aquatic Life Benchmarks
 
@@ -296,79 +292,41 @@ measured concentrations by an acute protective value; using chronic benchmarks a
 Index denominators would mix protection levels and invalidate the HI interpretation.
 Chronic columns are present in the source file but are not used as denominators.
 
-#### EU Water Framework Directive Environmental Quality Standards
+### 6.3 Coverage, and Why Three Frameworks Were Removed
 
-**Source**: EU Directive 2013/39/EU, Annex I — Priority Substances.
-**File**: `Data/EUEPA_aquatic_benchmarks.csv`
-**Coverage**: approximately 45 priority substances.
+TaxoTox previously also implemented three additional frameworks: EU Water Framework
+Directive Environmental Quality Standards (Directive 2013/39/EU Annex I, ~45 priority
+substances, `benchmark_eu_eqs_aa_marine_ng_L`), Australia/New Zealand ANZG 2018 Default
+Guideline Values at the 95% species protection level (`benchmark_au_anzg_fresh_ng_L` /
+`_marine_ng_L`), and Canada CCME freshwater long-term guidelines
+(`benchmark_ca_ccme_fresh_lt_ng_L`). All three were removed from
+`Code/taxotox_install_benchmarks.R` and the app's benchmark sub-selector because their
+compound coverage in TaxoTox's reference table was too low to be useful:
 
-The file extract contains a single Annual Average Environmental Quality Standard
-(AA-EQS) value per compound (µg/L). This value corresponds to the surface water EQS
-applicable to estuarine and coastal waters, which is the primary environment for
-TaxoTox deployments.
-
-| Reference table column | Interpretation |
+| Framework | Coverage (of matched compound rows) |
 |---|---|
-| `benchmark_eu_eqs_aa_marine_ng_L` | AA-EQS for surface waters (µg/L × 1000 → ng/L) |
+| US EPA (fish / crustacean / algae) | ~10.4% / ~10.4% / ~8.6% |
+| EU EQS | ~0.9% |
+| AU ANZG (freshwater / marine) | ~2.8% / ~1.3% |
+| CA CCME | ~2.1% |
 
-#### Australia and New Zealand Guidelines for Fresh and Marine Water Quality
+For compounds absent from the US EPA table, the Hazard Quotient for that compound is not
+computed and contributes zero to the Hazard Index — this means the Hazard Index
+underestimates risk when coverage is poor, which is itself a reason to prefer a framework
+with meaningfully higher coverage over one that would rarely contribute anything.
+Coverage is reported at the end of `Code/taxotox_install_benchmarks.R`'s console output
+on every run.
 
-**Source**: ANZG 2018 / ANZECC 2000 Default Guideline Values.
-**File**: `Data/Australia_aquatic_benchmarks.csv`
-
-Each compound has two rows: one for freshwater and one for marine water. Trigger values
-are provided at four species protection levels (80%, 90%, 95%, 99%). TaxoTox uses the
-95% protection level (LOSP 95), which corresponds to slightly-to-moderately disturbed
-ecosystems and is the recommended default for most monitoring applications.
-
-| Reference table column | Medium | Protection level |
-|---|---|---|
-| `benchmark_au_anzg_fresh_ng_L` | Freshwater | 95% species protection |
-| `benchmark_au_anzg_marine_ng_L` | Marine water | 95% species protection |
-
-#### Canada CCME Water Quality Guidelines
-
-**Source**: Canadian Council of Ministers of the Environment — Water Quality Guidelines
-for the Protection of Aquatic Life.
-**File**: `Data/Canada_aquatic_benchmarks.csv`
-
-TaxoTox uses the freshwater long-term (chronic) guideline, which is the most
-comprehensive and protective column available. Non-numeric entries (`No data`, `NRG`,
-`Insufficient data`) are treated as not available (NA).
-
-| Reference table column | Interpretation |
-|---|---|
-| `benchmark_ca_ccme_fresh_lt_ng_L` | Freshwater long-term (chronic) guideline (µg/L × 1000 → ng/L) |
-
-### 6.3 Coverage
-
-Benchmark coverage varies substantially by framework. The US EPA and Canada CCME tables
-cover predominantly pesticides and legacy contaminants. The EU EQS list covers only
-~45 EU priority substances. The Australia ANZG table covers a broader range of compounds
-including some industrial chemicals and metals. For compounds absent from a benchmark
-table, the Hazard Quotient for that compound is not computed and contributes zero to the
-Hazard Index — this means the Hazard Index underestimates risk when coverage is poor.
-
-Coverage per framework and taxonomic group is reported at the end of
-`taxotox_install_benchmarks.R` and is visualised in Plot 8 of `Code/validate_reference.R`,
-which shows all compounds covered by at least one benchmark, coloured by framework and
-sorted from broadest to narrowest coverage.
+The three removed frameworks' source files (`Data/EUEPA_aquatic_benchmarks.csv`,
+`Data/Australia_aquatic_benchmarks.csv`, `Data/Canada_aquatic_benchmarks.csv`) were left
+in `Data/` in case a future revision of those sources improves coverage enough to
+reconsider — re-adding them would mean restoring the I-7/I-8/I-9 parsing logic described
+in `Docs/TaxoTox_Redesign_Plan.md`'s version history for this file.
 
 ### 6.4 References
 
 - US EPA (various years). *Aquatic Life Benchmarks and Ecological Risk Assessments for
   Registered Pesticides*. Office of Pesticide Programs, Washington DC.
-
-- European Parliament and Council (2013). Directive 2013/39/EU amending Directives
-  2000/60/EC and 2008/105/EC as regards priority substances in the field of water policy.
-  *Official Journal of the European Union*, L 226, 1–17.
-
-- ANZG (2018). *Australian and New Zealand Guidelines for Fresh and Marine Water Quality*.
-  Australian and New Zealand Governments and Australian State and Territory Governments,
-  Canberra.
-
-- CCME (various years). *Canadian Water Quality Guidelines for the Protection of Aquatic
-  Life: Summary Table*. Canadian Council of Ministers of the Environment, Winnipeg.
 
 ---
 
@@ -494,120 +452,125 @@ CAMA relaxes this assumption while remaining computationally tractable.
 
 ### 8.2 Mode of Action Groups
 
-Five mechanistic groups are used in TaxoTox, plus a default:
+`moa_group` values come directly from an external curated database (Section 8.3) rather
+than a fixed, hardcoded list — the actual set of groups present in `taxotox_reference.fst`
+depends on which compounds are in that source's coverage. A representative sample of
+`moa_group` values (verified directly against the source data during development):
 
-| `moa_group` value | Mechanism | Typical compound classes |
+| `moa_group` value | Mechanism | Example compounds |
 |---|---|---|
-| `narcosis` | Baseline toxicity — disruption of membrane structure without specific receptor interaction | Most organic compounds; non-polar and polar narcotics |
-| `AChE_inhibition` | Inhibition of acetylcholinesterase — leads to accumulation of acetylcholine at nerve synapses | Organophosphate pesticides, carbamate pesticides |
-| `PSII_inhibition` | Inhibition of Photosystem II — blocks photosynthetic electron transport in plants and algae | Triazine herbicides, phenylurea herbicides, diazinone herbicides |
-| `pyrethroid` | Voltage-gated sodium channel modulation — prolongs sodium channel opening in nerve cells | Synthetic pyrethroid insecticides |
-| `reactive` | Non-specific electrophilic reactivity — covalent binding to macromolecules | Epoxides, Michael acceptors, alpha-beta unsaturated carbonyls |
+| `Neuromuscular system` | Includes acetylcholinesterase (AChE) inhibition — accumulation of acetylcholine at nerve synapses | Chlorpyrifos, chlorpyrifos-methyl, diazinon (organophosphates) |
+| `Photosynthesis inhibition` | Blocks photosynthetic electron transport (largely Photosystem II) in plants and algae | Atrazine, diuron (triazine and phenylurea herbicides) |
+| `Neuroactive` | Includes sodium channel modulation and other neural mechanisms | Permethrin and other pyrethroids |
+| `unknown` | No Mode of Action classification available | Any compound not covered, or not yet classified, by the source database |
 
-Compounds with no classifiable information are assigned `moa_group = "narcosis"` as a
-conservative default, consistent with standard regulatory practice (Verhaar et al., 1992;
-ECHA guidance). This assignment means that unclassified compounds are treated as acting
-by the most common and most extensively studied aquatic toxicity mechanism.
+Some entries are themselves multi-mechanism, comma-joined labels straight from the source
+data (e.g. `"Cardiovascular system, Neuromuscular system"`) — these are kept verbatim
+rather than split, since CAMA only needs a consistent group label to partition compounds
+for Concentration Addition, not a single "primary" mechanism.
+
+Compounds with no classifiable information are assigned `moa_group = "unknown"` — an
+explicit, honest label, not a default assumption of narcosis/baseline toxicity. See
+Section 8.4 for why this changed from an earlier narcosis-default approach, and Section
+10.5 for how CAMA handles the `"unknown"` group in its output.
 
 ### 8.3 Classification Strategy
 
-Mode of Action group assignment follows a priority hierarchy implemented in step I-3 of
-`taxotox_install.R`. Each compound receives the first applicable classification from the
-following sequence:
+Mode of Action group assignment is implemented in `Code/taxotox_install_moa.R`. It runs
+automatically at the end of `taxotox_install.R` (Step I-12, alongside
+`taxotox_install_benchmarks.R` and `taxotox_install_nowell.R` — see Section 10.6 for the
+latter), but is also fully runnable standalone afterward, e.g. to refresh just the MoA
+join without re-running the rest of the pipeline. Source: Kramer, L., Schulze, T.,
+Klüver, N., Altenburger, R.,
+Hackermüller, J., Krauss, M., & Busch, W. (2024). Curated mode-of-action data and effect
+concentrations for chemicals relevant for the aquatic environment. *Scientific Data*, 11,
+26. https://doi.org/10.1038/s41597-023-02904-7 — a systematically curated, peer-reviewed,
+freely downloadable dataset (Zenodo, DOI 10.5281/zenodo.10071824, no login required) from
+the Helmholtz Centre for Environmental Research (UFZ), covering fish, algae, and
+crustaceans separately — the same three taxonomic groups TaxoTox itself uses.
 
-**Priority 1 — Chemical name pattern matching** (`moa_source = "name_heuristic"`):
-The preferred chemical name from CompTox and the canonical name from ECOTOX are tested
-against regular expression patterns for major pesticide classes. This method is applied
-first because it is the most specific and chemically interpretable. Patterns cover:
+The dataset ships as two CSV tables (`Data/Kramer2024_TableB_chemicals.csv`,
+`Data/Kramer2024_TableC_moa.csv`), both keyed by an internal `ID` and joined together on
+that key. Table B supplies `cas_rn` (standard hyphenated CAS, converted to TaxoTox's
+dash-free `cas_number` convention); Table C supplies `MoA_broad`, used verbatim as
+`moa_group`. Compounds with no CAS number in the source (`cas_rn == "n/a"`, mostly
+unregistered mixtures/generic entries) are dropped before joining, since they cannot be
+matched to `taxotox_reference.fst` by CAS. The join was confirmed 1:1:1 (no duplicate
+`ID` in either table, no duplicate `cas_rn` in Table B) during development, so no
+tie-breaking logic is needed.
 
-- Organophosphates: chlorpyrifos, malathion, diazinon, parathion, phosmet, and
-  approximately 20 additional active ingredients by name
-- Carbamates: carbofuran, carbaryl, methomyl, aldicarb, pirimicarb, and others
-- Triazine herbicides: atrazine, simazine, terbuthylazine, and others
-- Phenylurea herbicides: diuron, isoproturon, linuron, chlortoluron, and others
-- Other Photosystem II inhibitors: bromacil, bentazon, metribuzin, and others
-- Pyrethroids: permethrin, cypermethrin, deltamethrin, lambda-cyhalothrin, and others
-- Reactive chemicals: epoxide, acrylate, acrolein, isocyanate, and related functional groups
+`moa_source` records provenance:
 
-Name patterns are case-insensitive and applied as substring matches. The CompTox preferred
-name takes priority over the ECOTOX chemical name because it is more consistently
-formatted.
+- `"Kramer2024"` — the compound has a real MoA classification in the source data
+- `"unknown_in_Kramer2024"` — the compound is in the source dataset, but its own
+  `MoA_broad` value is `"unknown"` there (the source's own way of marking a chemical it
+  could not classify)
+- `"not_in_Kramer2024"` — the compound isn't in the source dataset at all (it covers
+  ~3,387 chemicals relevant to the aquatic environment, not TaxoTox's full compound
+  universe, which also includes CompTox-gap-filled and Nowell-published compounds)
 
-**Priority 2 — LogKow-based Verhaar classification** (`moa_source = "Verhaar_LogKow"`):
-For compounds not matched by name patterns, the octanol-water partition coefficient
-(LogKow) is retrieved from the CompTox predicted property endpoint. The Verhaar
-classification scheme (Verhaar et al., 1992) assigns organic chemicals to four classes
-based on LogKow and structural features. In TaxoTox, both Verhaar classes 1 (non-polar
-narcosis, LogKow ≥ 2) and 2 (polar narcosis, LogKow < 2) are mapped to `"narcosis"`
-because they share the same membrane-disruption mechanism and are treated identically
-in the Concentration Addition framework. Verhaar classes 3 (unspecific reactive) and 4
-(specifically acting) cannot be resolved without structural alert analysis (SMARTS
-matching), which requires external chemical informatics tools not currently integrated.
+Both `"unknown_in_Kramer2024"` and `"not_in_Kramer2024"` result in `moa_group = "unknown"`
+— TaxoTox does not distinguish "the source couldn't classify it" from "the source doesn't
+have it" in the group label itself, only in `moa_source`.
 
-**Priority 3 — Default** (`moa_source = "default_narcosis"`):
-Compounds for which neither name patterns nor LogKow are available are assigned
-`moa_group = "narcosis"`. This includes compounds not in CompTox and those with unusual
-chemical names not covered by the current pattern library.
+### 8.4 Coverage and Why the Narcosis Default Was Removed
 
-### 8.4 Coverage and Observed Results
+An earlier version of this classification used a ~100-name regex pattern list for known
+pesticide classes (organophosphates, carbamates, triazines, phenylureas, pyrethroids),
+falling back to a LogKow-based Verhaar narcosis check that contributed no classifications
+in practice, and finally defaulting **every unmatched compound to `"narcosis"`** as a
+conservative placeholder. In the dataset that heuristic ran against, this meant ~97% of
+compound × group rows were narcosis by default — not because 97% of compounds were
+actually confirmed to act by baseline toxicity, but because the classifier had no better
+information for them.
 
-Mode of Action group coverage is reported in Plot 7 of `Code/validate_reference.R`:
-a stacked bar chart shows the number of compound × group rows per mode of action group
-per taxonomic group, with hover text showing the classification source.
+The Kramer et al. (2024) dataset was adopted specifically because it distinguishes real
+narcosis/baseline-toxicity classifications from compounds it genuinely could not classify
+(labelled `"unknown"` in the source itself). Re-running the join against TaxoTox's current
+reference table gives, per unique compound:
 
-In the current `Known_CAS.fst` dataset (~2800 compounds, estuarine monitoring panel),
-the observed distribution is heavily dominated by narcosis (~97% of rows), with small
-fractions of acetylcholinesterase inhibitors (~0.4%), Photosystem II inhibitors, and
-pyrethroids. This reflects the actual chemical composition of the dataset: the majority
-of monitored compounds are pharmaceuticals, personal care products, industrial chemicals,
-and pesticide metabolites that act by non-specific membrane toxicity.
+| `moa_source` | Compounds |
+|---|---|
+| `Kramer2024` (real classification) | 1,702 |
+| `unknown_in_Kramer2024` | 594 |
+| `not_in_Kramer2024` | 4,096 |
 
-In practice, Priority 2 (LogKow-based Verhaar classification) contributed zero
-classifications in the current run: every compound that was not matched by a name pattern
-(Priority 1) fell directly to the narcosis default (Priority 3), because Verhaar classes 1
-and 2 both map to narcosis anyway. Priority 2 adds no new information for the two narcosis
-classes; its only potential value would be for Verhaar classes 3 and 4, which require
-structural alert analysis not yet implemented. The LogKow retrieval step is therefore
-retained in the pipeline for future extension but has no effect on the current classification
-output.
-
-This result has a practical implication for the CAMA method: in most water samples,
-CAMA will return results very close to standard Concentration Addition / Toxic Unit
-calculations, because there are insufficient compounds from distinct mechanistic groups
-to generate divergent outcomes.
+Real MoA coverage (~27% of TaxoTox's ~6,400 unique compounds) is far lower than the old
+scheme's ~97% narcosis figure — by design. The old figure measured how often the
+classifier assigned *some* label; this one measures how often that label reflects an
+actual curated classification.
 
 Key limitations of the current classification:
 
-1. **Name pattern coverage is incomplete**: the pattern library covers approximately
-   80–100 named active ingredients across the five mechanistic groups. Novel compounds,
-   transformation products, and compounds named by IUPAC systematic names rather than
-   common names may be missed and default to narcosis.
+1. **Coverage is bounded by the source dataset's scope**: Kramer et al. (2024) covers
+   ~3,387 chemicals "relevant for the aquatic environment" — a broad but not exhaustive
+   set. Compounds outside that scope (including many CompTox-gap-filled and
+   Nowell-published compounds already in `taxotox_reference.fst`) get `moa_group =
+   "unknown"` regardless of whether they have a real, documented mode of action elsewhere
+   in the literature.
 
-2. **Narcosis dominance is expected**: the majority of organic chemicals in any
-   environmental dataset act by narcosis (Verhaar et al., 1992). A reference table
-   dominated by `"narcosis"` does not indicate a classification failure — it reflects
-   the chemical composition of typical aquatic monitoring datasets.
+2. **`"unknown"` is not a risk-neutral default**: unlike the old narcosis-default
+   approach (deliberately conservative, since narcosis is a weak/common mechanism),
+   `"unknown"` compounds form their own CAMA group and are combined with all other groups
+   via Independent Action. Section 10.5 covers how this affects `E_mix`, and why CAMA now
+   produces a second output variant that excludes the unknown-MoA group entirely.
 
-3. **Verhaar classes 3 and 4 are not fully resolved**: without SMARTS-based structural
-   alert screening, reactive compounds and specifically-acting compounds not covered by
-   name patterns will be assigned to narcosis. This is conservative — narcosis is a
-   weaker assumption than specific receptor binding — but may underestimate risk for
-   samples dominated by reactive chemicals.
-
-4. **Mode of Action versus mode of toxic action**: the classification implemented here
-   uses the toxicological mode of action at the organism level (how the chemical kills
+3. **Mode of Action versus mode of toxic action**: as before, the classification used
+   here is the toxicological mode of action at the organism level (how the chemical kills
    or inhibits), not the molecular initiating event in the sense of the Adverse Outcome
-   Pathway (AOP) framework. These are generally equivalent for the compound classes
-   covered but the distinction matters for more granular mechanistic analysis.
+   Pathway (AOP) framework.
 
 ### 8.5 References
+
+- Kramer, L., Schulze, T., Klüver, N., Altenburger, R., Hackermüller, J., Krauss, M., &
+  Busch, W. (2024). Curated mode-of-action data and effect concentrations for chemicals
+  relevant for the aquatic environment. *Scientific Data*, 11, 26.
+  https://doi.org/10.1038/s41597-023-02904-7 — dataset:
+  https://doi.org/10.5281/zenodo.10071824
 
 - Verhaar, H.J.M., van Leeuwen, C.J., Hermens, J.L.M. (1992). Classifying environmental
   pollutants. *Chemosphere*, 25(4), 471–491.
   https://doi.org/10.1016/0045-6535(92)90280-5
-
-- European Chemicals Agency (ECHA). *Guidance on the Application of the CLP Criteria,
-  Chapter R.7a: Endpoint specific guidance*. ECHA, Helsinki.
 
 ---
 
@@ -815,27 +778,52 @@ $$E_{mix,j} = 1 - \prod_g (1 - E_{group,gj})$$
 
 ### 10.5.3 Mode of Action Groups
 
-Five groups are used (see Section 8 for classification details):
-`narcosis`, `AChE_inhibition`, `PSII_inhibition`, `pyrethroid`, `reactive`.
-Compounds with no classifiable MoA default to `narcosis`.
+Groups come from an external curated database (see Section 8 for the full classification
+methodology) rather than a fixed list — `moa_group` is Kramer et al. (2024)'s own
+`MoA_broad` value for each compound (e.g. `Neuromuscular system`, `Photosynthesis
+inhibition`, `Neuroactive`), or the literal group `unknown` for compounds with no MoA
+classification available (from any cause — see Section 8.3 for the distinction between
+`moa_source` values, all of which collapse to `moa_group = "unknown"`).
 
 ### 10.5.4 Output
 
-Results are written to three sheets (`CAMA Algae`, `CAMA Crustacean`, `CAMA Fish`).
+Results are written to **six** sheets — two variants (unknown-MoA compounds included vs.
+excluded) for each of the three taxonomic groups:
+
+- `CAMA Algae`, `CAMA Crustacean`, `CAMA Fish` — all matched compounds included, with
+  `unknown`-MoA compounds forming their own group like any other
+- `CAMA Algae (known MoA)`, `CAMA Crustacean (known MoA)`, `CAMA Fish (known MoA)` —
+  compounds with `moa_group == "unknown"` excluded entirely before the within-group CA /
+  between-group IA calculation. (Named `"(known MoA)"` rather than the more verbose
+  `"(MoA-known only)"` because Excel worksheet names are capped at 31 characters --
+  `"CAMA Crustacean (MoA-known only)"` is 32 and openxlsx rejects it.)
+
 Each sheet has:
 
 - **`E_mix`** (first column) — mixture fractional effect per sample (0–1)
-- Per-group **`E_group`** columns (e.g. `E_narcosis`, `E_AChE_inhibition`) — useful for
-  seeing which mechanistic group drives the mixture risk
+- Per-group **`E_group`** columns (e.g. `E_Neuromuscular system`,
+  `` `E_Photosynthesis inhibition` ``, `E_unknown`) — useful for seeing which mechanistic
+  group drives the mixture risk
+
+Comparing the two variants for the same sample shows how much the unknown-MoA group is
+driving the result: since IA treats groups as independent risks that combine
+(`E_mix = 1 - ∏(1 - E_group)`), a group with a large `E_group` — including an `unknown`
+group dominated by a handful of high-concentration but unclassified compounds — can
+noticeably raise `E_mix` even though it says nothing about a shared mechanism. The
+"known MoA" variant strips that out, showing what CAMA would report using only
+compounds with an actual curated Mode of Action.
 
 ### 10.5.5 Practical expectation
 
-Given the current dataset composition (~97% narcosis compounds; see Section 8.4), CAMA
-will in most cases return values very close to standard CA-based PTI. Divergence is
-expected only in samples where specific-acting compounds (organophosphates, pyrethroids,
-triazines) contribute meaningfully to total TU. The CAMA output is most informative as
-a sensitivity analysis: large differences between PTI and $E_{mix}^{CAMA}$ indicate that
-cross-mechanism interactions may be important.
+Given that real MoA classifications currently cover roughly a quarter of TaxoTox's
+compound universe (Section 8.4), most compounds fall into the `unknown` group. This means
+the "all compounds" CAMA variant will often behave similarly to standard CA-based PTI for
+water samples dominated by unclassified compounds — not because those compounds are known
+to act non-specifically (the old narcosis-default assumption), but because CAMA has no
+mechanistic information to partition them further. The "known MoA" variant is the
+more mechanistically meaningful one whenever a sample contains enough classified
+compounds to populate multiple real MoA groups; comparing it against the "all compounds"
+variant and against standard PTI is the recommended way to interpret CAMA output.
 
 ### 10.5.6 References
 
@@ -862,63 +850,66 @@ group) or the Benchmark Hazard Index (a cross-invertebrate EPA regulatory value)
 of which use denominators computed over a different, broader species population than
 Nowell et al.'s taxon-restricted approach.
 
-Nowell et al. tested five candidate procedures for the "sensitive toxicity
-concentration" (STC) denominator and adopted **"Approach B"**, described below; TaxoTox
-implements Approach B only.
+TaxoTox uses Nowell et al.'s own **published** STC values directly (from their
+Supplementary Appendix B), rather than re-deriving them from TaxoTox's local ECOTOX
+snapshot. An earlier version of TaxoTox recomputed STC from ECOTOX using Nowell et al.'s
+"Approach B" procedure (5th percentile of individual toxicity values when n > 12,
+otherwise the minimum), but this diverged substantially from the published numbers —
+e.g. Diazinon fish STC: ~45 µg/L recomputed vs. 85 µg/L published; Atrazine fish STC:
+~2099 µg/L recomputed vs. 4500 µg/L published — because Nowell et al.'s STC also draws
+on USEPA OPP aquatic-life benchmarks and the Pesticide Properties Database (PPDB), not
+ECOTOX alone, and because ECOTOX itself has been revised since their 2012–2013 data
+pull. Using the published table instead makes TaxoTox's Taxon-Sensitive PTI exactly
+reproduce, rather than approximate, the values reported in downstream USGS literature
+(e.g. Covert et al. 2020).
 
 ### 10.6.2 Formula
-
-For each compound and target taxon, let $n$ be the number of individual (unweighted,
-i.e. not aggregated by species first) ECOTOX toxicity test values (LC50 or EC50)
-available:
-
-$$
-STC = \begin{cases}
-\text{5th percentile of the } n \text{ values} & n > 12 \\
-\min(\text{values}) & 1 \le n \le 12
-\end{cases}
-$$
-
-The $n > 12$ threshold is not arbitrary — Nowell et al. derived it via Monte Carlo
-simulation showing that, for samples of 12 or fewer toxicity tests, the probability of
-the minimum value being a low statistical outlier (below the true 5th percentile of a
-larger hypothetical population) is under 50%, so the minimum can be used directly; above
-12, a directly-computed 5th percentile becomes the more reliable choice. TaxoTox uses
-this threshold and R's default (type-7) quantile interpolation, since the source paper
-does not specify an interpolation method.
 
 $$TU_i = \frac{C_i}{STC_i} \qquad PTI_j = \sum_i TU_{ij}$$
 
 Standard Concentration Addition, identical in form to the Standard PTI — only the
-denominator source differs.
+denominator source differs. $STC_i$ is read directly from Nowell et al.'s published
+Table B.1 (fish) / Table B.2 (cladocerans); see Nowell et al. (2014) Supplementary
+Appendix A, sections 3–4, for how they derived it (5th percentile of individual
+toxicity values when n > 12, otherwise the minimum — "Approach B" of five candidate
+procedures they evaluated).
 
 ### 10.6.3 Taxon definition and data source
 
-- **Fish**: the full ECOTOX fish population for each compound (same population the
-  Standard PTI's `median_lc50_ng_L` uses — Approach B just computes a different
-  statistic from it).
-- **Cladoceran** (reported under the "crustacean" taxonomic group for compatibility with
-  TaxoTox's existing per-group calculation code): restricted to the 17 cladoceran genera
-  Nowell et al. (2014, Supplementary Appendix C, "Table C.1 PTI taxa") tested —
-  *Acantholeberis, Acroperus, Alona, Alonella, Bosmina, Ceriodaphnia, Chydorus, Daphnia,
-  Diaphanosoma, Disparalona, Eurycercus, Moina, Moinodaphnia, Pleuroxus, Pseudosida,
-  Scapholeberis, Simocephalus* — not TaxoTox's full crustacean group (which spans
-  amphipods, copepods, mysids, and other non-cladoceran crustaceans). Both EC50
-  (immobilization) and LC50 (mortality) endpoints are included, matching Nowell et al.'s
-  treatment of these as equivalent for cladocerans.
-- **Algae**: not computed. Nowell et al.'s method covers fish, cladocerans, and benthic
-  invertebrates only — it was never defined for algae.
-- **Benthic invertebrates**: Nowell et al.'s third taxon is out of scope for this
-  implementation — it spans aquatic insects (e.g. midges, mayflies) that TaxoTox's
-  ECOTOX extraction does not currently pull in at all (only fish/algae/crustacean
-  `ecotox_group`s are queried; see Section 3).
+Source file: `Data/Nowell2014_AppB.xlsx`, the official supplementary Appendix B from
+Nowell et al. (2014), downloaded from
+https://water.usgs.gov/nawqa/pnsp/pubs/Nowell2014_STOTEN_PTI/Nowell2014_SuppInfo_PTI.zip
+and joined into `taxotox_reference.fst` by `Code/taxotox_install_nowell.R` (step I-10).
 
-**Known simplification vs. the source method:** Nowell et al. supplemented ECOTOX with
-USEPA OPP aquatic-life benchmark documents and the Pesticide Properties Database (PPDB)
-when ECOTOX data were sparse for a compound. TaxoTox's implementation uses ECOTOX data
-only, consistent with how the rest of TaxoTox is built — coverage will therefore be
-somewhat narrower than the original method's, particularly for compounds with limited
-ECOTOX testing history.
+- **Fish**: `Table B.1 - Fish` (~480 compounds after dropping rows with no assigned CAS
+  number).
+- **Cladoceran** (reported under the "crustacean" taxonomic group for compatibility with
+  TaxoTox's existing per-group calculation code): `Table B.2 - Cladocerans` (~463
+  compounds), already restricted by Nowell et al. to the 17 cladoceran genera they
+  tested (their Appendix C "Table C.1 PTI taxa") — not TaxoTox's full crustacean group
+  (which spans amphipods, copepods, mysids, and other non-cladoceran crustaceans).
+- **Algae**: not available. Nowell et al.'s method covers fish, cladocerans, and benthic
+  invertebrates only — it was never defined for algae.
+- **Benthic invertebrates**: `Table B.3 - Benthic invertebrates` exists in the source
+  file but is not joined into TaxoTox — it spans aquatic insects (e.g. midges, mayflies)
+  that TaxoTox's ECOTOX extraction does not currently pull in at all (only
+  fish/algae/crustacean `ecotox_group`s are queried; see Section 3), and TaxoTox does
+  not currently expose a Benthic Invertebrate PTI method in the UI.
+
+**"Non-standard" flagged rows are used as published, not excluded.** Nowell et al.'s
+table flags some rows' toxicity source ("Toxicity value type/source" column, e.g.
+"non-std OPP", "non-std PPDB") when the underlying test didn't meet their standard
+duration/endpoint criteria. TaxoTox does not filter these out: hundreds of compounds
+have no standard-duration ECOTOX data at all, so their published STC *is* a non-std
+value — excluding it would delete the compound from coverage entirely, not make the
+remaining data more standard. The flag documents a known bias direction (Nowell et al.
+note whether it over- or under-estimates toxicity); it is not an instruction to discard
+the row, and downstream users of the table (e.g. Covert et al. 2020) apply it as-is.
+
+Compounds present in Nowell et al.'s table that TaxoTox's own ECOTOX pull never
+surfaced (because their STC came from OPP/PPDB rather than ECOTOX, or because ECOTOX
+coverage has shifted since 2012–2013) are added to `taxotox_reference.fst` as new rows,
+the same way step I-2 (CompTox gap-fill) adds rows for compounds absent from ECOTOX.
 
 ### 10.6.4 Output
 
@@ -945,9 +936,9 @@ Compound names in the input file are resolved to CAS Registry Numbers (CASRNs) t
 
 **Layer 1 — Known_CAS (exact, instant):** a curated internal table (`Known_CAS.fst`) of compound names and their CASRNs. Exact string matches are confirmed automatically with no user interaction. The table is designed to hold multiple synonyms per compound (e.g. "Albuterol", "Salbutamol", and "Albuterol / Salbutamol" may all map to the same CASRN 18559-94-9). Each entry has a `PREFERRED_NAME` which is the canonical display name used in all outputs.
 
-**Layer 2 — PubChem REST API (optional):** when enabled, unresolved names are queried live against the PubChem compound database via the `webchem` R package. Candidate matches are presented for user review in the CASRN Matching tab. Accepted matches are written to a temporary log (`temp_CAS` — local file or Google Sheet when deployed) for future integration into Known_CAS via the curation script.
+**Layer 2 — PubChem REST API (optional):** when enabled, unresolved names are queried live against the PubChem compound database via the `webchem` R package. Candidate matches are presented for user review in the CASRN Matching tab. Accepted matches are appended to a pending-compounds Google Sheet for future integration into Known_CAS via the curation script (`Code/taxotox_curate.R`). Curation is Sheets-only — there is no local-file fallback — so pending items persist across shinyapps.io restarts and there is exactly one queue to review, regardless of which machine or deployment logged the compound.
 
-**Manual entry:** compounds still unresolved after both layers can have their CASRN entered directly in the CASRN Matching tab. These are also logged to `temp_CAS`.
+**Manual entry:** compounds still unresolved after both layers can have their CASRN entered directly in the CASRN Matching tab. These are also logged to the same Google Sheet.
 
 ### Synonym handling and duplicate CASRN detection
 

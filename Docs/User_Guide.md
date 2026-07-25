@@ -160,33 +160,39 @@ alongside the standard calculation on the same button press:
   (HC5) instead of the median LC50 as the denominator, a more protective, regulatory-style
   threshold. Produces systematically higher PTI values than the standard method.
 - **Benchmark Hazard Index** — replaces the LC50 denominator with a national regulatory
-  benchmark. Choose one or more frameworks: **US EPA** (Aquatic Life Benchmarks), **EU
-  EQS** (Water Framework Directive), **AU ANZG** (Australia/New Zealand), **CA CCME**
-  (Canada). Coverage varies substantially by framework and compound class — see
+  benchmark: **US EPA** (Aquatic Life Benchmarks). Three other frameworks (EU EQS, AU
+  ANZG, CA CCME) were removed because their compound coverage in TaxoTox's reference
+  table was too low to be useful (each under 3%, vs. US EPA's ~9–10%) — see
   `TaxoTox_Technical_Methods.md` Section 6.3.
 - **Independent Action (IA)** — an alternative to the default Concentration Addition
   model; treats compounds as acting independently rather than additively. More appropriate
   when a mixture is dominated by one or two potent, specifically-acting compounds.
 - **CAMA** — applies Concentration Addition within groups of compounds sharing the same
-  mode of action, then Independent Action across groups. For most estuarine monitoring
-  datasets (dominated by baseline-narcosis compounds) CAMA tracks the standard PTI closely;
-  divergence signals a mixture with meaningful contributions from specifically-acting
-  compounds (organophosphates, pyrethroids, triazines).
-- **Taxon-Sensitive PTI (Nowell et al. 2014)** — replicates the USGS NAWQA Pesticide
-  Toxicity Index methodology (Nowell, Norman, Moran, Martin & Stone, 2014, *Sci. Total
+  mode of action, then Independent Action across groups. Mode of Action groups come from
+  a real, externally curated database (Kramer et al. 2024) rather than a fixed category
+  list, and compounds it doesn't classify get an explicit `unknown` group rather than
+  being assumed to act by baseline narcosis. Because real classifications currently cover
+  only a fraction of compounds, CAMA produces **two output variants** per taxonomic
+  group: one including the `unknown`-MoA compounds as their own group, and one
+  ("known MoA") excluding them entirely — compare the two to see how much the
+  unclassified compounds are driving the result. See
+  `TaxoTox_Technical_Methods.md` Section 10.5 for details.
+- **Taxon-Sensitive PTI (Nowell et al. 2014)** — uses the USGS NAWQA Pesticide Toxicity
+  Index (PTI) methodology (Nowell, Norman, Moran, Martin & Stone, 2014, *Sci. Total
   Environ.* 476–477:144–157), the reference method behind the published NWQN/RSQA PTI
-  values many USGS water-quality studies report. Denominator is a "sensitive toxicity
-  concentration": the 5th percentile of individual ECOTOX toxicity values when more than
-  12 are available, otherwise the minimum. Covers **fish and cladocerans only** (Nowell's
+  values many USGS water-quality studies report. The denominator ("sensitive toxicity
+  concentration", STC) is read directly from Nowell et al.'s own published reference
+  table (their Supplementary Appendix B), not recomputed from ECOTOX — so results
+  exactly reproduce, rather than approximate, the values reported in downstream USGS
+  literature (e.g. Covert et al. 2020). Covers **fish and cladocerans only** (Nowell's
   method doesn't include algae, and TaxoTox doesn't model their third taxon, benthic
   invertebrates); the cladoceran denominator is restricted to the 17 cladoceran genera
   Nowell et al. tested, not TaxoTox's full crustacean group, so results are directly
   comparable to published cladoceran-PTI values in a way the Benchmark Hazard Index
   method (a cross-invertebrate regulatory value) is not. Coverage is narrower than the
-  other methods since it draws only on ECOTOX data (Nowell et al. also used OPP
-  benchmarks and the Pesticide Properties Database as supplementary sources; TaxoTox's
-  version does not). See `TaxoTox_Technical_Methods.md` Section 10.6 for the full
-  algorithm.
+  other methods since it's limited to the ~480 fish and ~460 cladoceran-genus
+  pesticides/degradates Nowell et al. published STC values for. See
+  `TaxoTox_Technical_Methods.md` Section 10.6 for the full algorithm.
 
 Full formulas, data sources, and validation for each method are in
 `TaxoTox_Technical_Methods.md` (Sections 5, 6, 10, 10.5).

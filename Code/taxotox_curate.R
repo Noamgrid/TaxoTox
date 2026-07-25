@@ -1,17 +1,23 @@
 # =============================================================================
 # taxotox_curate.R
 # -----------------------------------------------------------------------------
-# Purpose : Interactive curation of temp_CAS — review compounds that were
-#           encountered during app sessions but not yet in Known_CAS.fst.
-#           Reads from Google Sheets when TAXOTOX_SHEET_ID env var is set
-#           (deployed mode); otherwise reads local temp_CAS.fst (dev mode).
+# Purpose : Interactive curation of the pending-compounds Google Sheet —
+#           review compounds that were encountered during app sessions but
+#           not yet in Known_CAS.fst. Curation is Sheets-only (no local
+#           temp_CAS.fst fallback): the Sheet is the single source of truth
+#           so pending items persist across shinyapps.io restarts and
+#           between dev machines, and there's exactly one queue to check.
 #           For each compound the researcher chooses:
 #             [A]dd    — append to Known_CAS.fst (permanent)
-#             [S]kip   — leave in temp_CAS.fst for the next curation run
-#             [R]eject — remove from temp_CAS.fst permanently
+#             [S]kip   — leave in the Sheet for the next curation run
+#             [R]eject — remove from the Sheet permanently
 #
-# After curation, run taxotox_install.R (via update_ecotox.R) to rebuild
-# taxotox_reference.fst and pick up the newly approved compounds.
+# This script is also invoked automatically (when running interactively)
+# from taxotox_install.R's Step 0b if the Sheet has pending items -- run it
+# standalone any time you want to curate without doing a full install.
+#
+# After curation, run taxotox_install.R to rebuild taxotox_reference.fst and
+# pick up the newly approved compounds.
 #
 # Authors : Yair Suari & Noam Gridish, 2025
 # =============================================================================
@@ -29,12 +35,13 @@
 
 library(dplyr)
 library(fst)
+library(googlesheets4)
 
 known_path <- file.path(.script_dir, "..", "Data", "Known_CAS.fst")
-temp_path  <- file.path(.script_dir, "..", "Data", "temp_CAS.fst")
 sheet_id   <- Sys.getenv("TAXOTOX_SHEET_ID",
                           unset = "1pftfWQNfIStasPqH1CvpDSAH3yHxYmjhggvAwlBaxDA")
-USE_SHEETS <- nzchar(sheet_id)
+if (!nzchar(sheet_id))
+  stop("TAXOTOX_SHEET_ID is empty — curation is Sheets-only and needs a Sheet ID.", call. = FALSE)
 
 # ── Auth helper (mirrors app.R) ───────────────────────────────────────────────
 .GS4_KEY_PATH <- file.path(.script_dir, "taxotox-service.json")
@@ -46,32 +53,23 @@ USE_SHEETS <- nzchar(sheet_id)
   }
 }
 
-# ── Load temp_CAS ─────────────────────────────────────────────────────────────
+# ── Load pending compounds from the Google Sheet ──────────────────────────────
 
-if (USE_SHEETS) {
-  library(googlesheets4)
-  .gs4_auth_auto()
-  temp_cas <- tryCatch(
-    googlesheets4::read_sheet(sheet_id, col_types = "cc") %>% as.data.frame(),
-    error = function(e) stop("Cannot read Google Sheet: ", conditionMessage(e))
-  )
-  message(sprintf("Read %d row(s) from Google Sheet.", nrow(temp_cas)))
-} else {
-  if (!file.exists(temp_path)) {
-    message("temp_CAS.fst not found — nothing to curate.")
-    stop("temp_CAS.fst not found.", call. = FALSE)
-  }
-  temp_cas <- read.fst(temp_path, as.data.table = FALSE)
-}
+.gs4_auth_auto()
+temp_cas <- tryCatch(
+  googlesheets4::read_sheet(sheet_id, col_types = "cc") %>% as.data.frame(),
+  error = function(e) stop("Cannot read Google Sheet: ", conditionMessage(e))
+)
+message(sprintf("Read %d row(s) from Google Sheet.", nrow(temp_cas)))
 
 known_cas <- read.fst(known_path, as.data.table = FALSE)
 
 if (nrow(temp_cas) == 0) {
-  message("temp_CAS.fst is empty — nothing to curate.")
+  message("Google Sheet is empty — nothing to curate.")
   stop("Nothing to curate.", call. = FALSE)
 }
 
-# ── Remove temp_CAS entries already present in Known_CAS ──────────────────────
+# ── Remove entries already present in Known_CAS ────────────────────────────────
 already_known <- temp_cas %>%
   filter(CASRN %in% known_cas$CASRN | PREFERRED_NAME %in% known_cas$PREFERRED_NAME)
 
@@ -139,31 +137,27 @@ if (length(added) > 0) {
   cat(paste0("  + ", added, collapse = "\n"), "\n\n")
 }
 
-# Keep only skipped compounds in temp_CAS
+# Keep only skipped compounds in the Sheet (adds/rejects are removed)
 temp_remaining <- temp_cas %>% filter(PREFERRED_NAME %in% skipped)
 
-if (USE_SHEETS) {
-  # Overwrite the sheet with only the skipped rows (adds/rejects are removed)
-  googlesheets4::write_sheet(data = temp_remaining, ss = sheet_id, sheet = 1)
-  if (nrow(temp_remaining) == 0)
-    message("Google Sheet cleared.")
-  else
-    message(sprintf("Google Sheet updated: %d skipped compound(s) retained.", nrow(temp_remaining)))
+googlesheets4::write_sheet(data = temp_remaining, ss = sheet_id, sheet = 1)
+if (nrow(temp_remaining) == 0) {
+  message("Google Sheet cleared.")
 } else {
-  write_fst(temp_remaining, temp_path, compress = 50)
+  message(sprintf("Google Sheet updated: %d skipped compound(s) retained.", nrow(temp_remaining)))
 }
 
 cat(sprintf("Summary: %d added, %d skipped, %d rejected.\n\n",
             length(added), length(skipped), length(rejected)))
 
 # ── Next step ─────────────────────────────────────────────────────────────────
-# taxotox_install.R / update_ecotox.R will pick up newly added Known_CAS entries
-# and populate taxotox_reference.fst (ECOTOX lookup + CompTox gap-fill) on the
-# next full upgrade run. No reference-table update is needed here.
+# taxotox_install.R will pick up newly added Known_CAS entries and populate
+# taxotox_reference.fst (ECOTOX lookup + CompTox gap-fill) on the next full
+# install run. No reference-table update is needed here.
 
 if (length(added) > 0) {
   message(sprintf(
-    "%d compound(s) added to Known_CAS. Run taxotox_install.R (or update_ecotox.R) ",
+    "%d compound(s) added to Known_CAS. Run taxotox_install.R ",
     length(added)
   ), "to populate taxotox_reference.fst for the new entries.")
 }

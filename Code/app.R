@@ -41,7 +41,8 @@
 #   LC50/EC50 endpoints for fish, algae, and crustaceans, applies unit
 #   conversions to ng/L, and back-transforms (log)-reported values.
 #   The resulting flat table is stored as an fst file for fast session
-#   loading. Run update_ecotox.R every ~3 months to refresh the database.
+#   loading. taxotox_install.R's Step 0a offers to refresh the underlying
+#   ECOTOX database (~3 months) before rebuilding, when run interactively.
 #
 # OUTPUT:
 #   - Interactive per-sample and per-pollutant bar/box plots (ggplot2).
@@ -54,7 +55,6 @@
 #   Code/taxotox_install.R   — builds final_ecotox_data.fst from ECOTOX
 #   Code/TaxoToxInstall_AFB.R— builds final_ecotox_data.fst from EPA
 #                              Aquatic Life Benchmarks (validation only)
-#   Code/update_ecotox.R     — downloads latest ECOTOX database (~quarterly)
 #   Code/install_dependencies.R — installs all required R packages
 #   Data/Known_CAS.fst           — curated CASRN lookup table
 #   Data/taxotox_reference.fst   — pre-aggregated denominators (median LC50, HC5,
@@ -174,15 +174,15 @@ ui <- fluidPage(
                 checkboxInput("method_nowell",    "Taxon-Sensitive PTI (Nowell et al. 2014)", value = FALSE),
 
                 # Benchmark sub-selector (A-6) — below all methods, shown only when benchmark is checked
+                # EU EQS / AU ANZG / CA CCME were removed due to low compound coverage
+                # (<3% each in the current reference table) -- US EPA is the only
+                # remaining framework, kept ~10% coverage.
                 conditionalPanel(
                     condition = "input.method_benchmark == true",
                     hr(style = "margin:6px 0;"),
                     tags$p(style = "margin-bottom:4px; font-weight:bold; font-size:13px;",
                            "Benchmarks:"),
                     checkboxInput("bm_usepa", "US EPA",  value = TRUE),
-                    checkboxInput("bm_eu",    "EU EQS",  value = FALSE),
-                    checkboxInput("bm_anzg",  "AU ANZG", value = FALSE),
-                    checkboxInput("bm_ccme",  "CA CCME", value = FALSE),
                     hr(style = "margin:6px 0;")
                 ),
 
@@ -268,7 +268,7 @@ ui <- fluidPage(
                             )
                         ),
                         p("Compounds still unresolved after both layers appear in the ",
-                          strong("'Manual CASRN Entry'"), " section of the CASRN Matching tab. Enter the correct CASRN (e.g. 107-13-1) and click 'Add CASRN'. All newly confirmed CASRNs are saved to a session file (temp_CAS.fst) for future integration into Known_CAS."),
+                          strong("'Manual CASRN Entry'"), " section of the CASRN Matching tab. Enter the correct CASRN (e.g. 107-13-1) and click 'Add CASRN'. All newly confirmed CASRNs are logged for future integration into Known_CAS."),
 
                         h4("Toxicity Calculation"),
                         p("For each compound i, sample j, and taxonomic group g (algae, crustaceans, fish), the Toxic Unit is:"),
@@ -488,10 +488,7 @@ server <- function(input, output, session) {
         }
         if (input$method_benchmark) {
             bm_cols <- c(
-                if (input$bm_usepa) "benchmark_usepa_fish_acute_ng_L"  else NULL,
-                if (input$bm_eu)    "benchmark_eu_eqs_aa_marine_ng_L"  else NULL,
-                if (input$bm_anzg)  "benchmark_au_anzg_marine_ng_L"    else NULL,
-                if (input$bm_ccme)  "benchmark_ca_ccme_fresh_lt_ng_L"  else NULL
+                if (input$bm_usepa) "benchmark_usepa_fish_acute_ng_L"  else NULL
             )
             for (col in bm_cols) {
                 if (!col %in% names(ref_matched)) next
@@ -499,10 +496,7 @@ server <- function(input, output, session) {
                     distinct(cas_number) %>% nrow()
                 pct <- round(100 * n_covered / max(n, 1))
                 label <- switch(col,
-                    benchmark_usepa_fish_acute_ng_L  = "US EPA",
-                    benchmark_eu_eqs_aa_marine_ng_L  = "EU EQS",
-                    benchmark_au_anzg_marine_ng_L    = "AU ANZG",
-                    benchmark_ca_ccme_fresh_lt_ng_L  = "CA CCME")
+                    benchmark_usepa_fish_acute_ng_L  = "US EPA")
                 if (pct < 80) msgs <- c(msgs, sprintf("%s: %d%% compound coverage", label, pct))
             }
         }
@@ -635,10 +629,12 @@ server <- function(input, output, session) {
     log_event("INFO", "session_start", "New session", session_id = .session_id)
 
     # ── append_to_temp_cas ────────────────────────────────────────────────────
-    # Appends newly confirmed PREFERRED_NAME / CASRN pairs to the temp_CAS log.
-    # When TAXOTOX_SHEET_ID env var is set (deployed), writes to Google Sheets so
-    # data persists across server restarts. Otherwise writes to a local FST file
-    # (development / offline runs).
+    # Appends newly confirmed PREFERRED_NAME / CASRN pairs to the curation
+    # Google Sheet, so data persists across shinyapps.io server restarts and
+    # curation always has one authoritative source. Curation is Sheets-only
+    # now (no local temp_CAS.fst fallback) -- TAXOTOX_SHEET_ID has a real
+    # default (see top of file), so a genuinely empty sheet_id only happens
+    # if that default is deliberately overridden to "".
     append_to_temp_cas <- function(new_data) {
         if (!all(c("PREFERRED_NAME", "CASRN") %in% names(new_data)))
             stop("New data must contain PREFERRED_NAME and CASRN columns.")
@@ -648,26 +644,18 @@ server <- function(input, output, session) {
 
         sheet_id <- Sys.getenv("TAXOTOX_SHEET_ID", unset = TAXOTOX_SHEET_ID)
 
-        if (nzchar(sheet_id)) {
-            tryCatch({
-                library(googlesheets4)
-                .gs4_auth_auto()
-                googlesheets4::sheet_append(ss = sheet_id, data = new_data)
-            }, error = function(e) {
-                warning("Google Sheets write failed — compound not logged: ", conditionMessage(e))
-            })
-        } else {
-            temp_cas_path <- "../Data/temp_CAS.fst"
-            temp_cas_dt <- if (file.exists(temp_cas_path)) {
-                read.fst(temp_cas_path, as.data.table = TRUE)
-            } else {
-                data.table(PREFERRED_NAME = character(), CASRN = character())
-            }
-            updated_dt <- rbindlist(list(temp_cas_dt, as.data.table(new_data)),
-                                    use.names = TRUE, fill = TRUE)
-            updated_dt <- unique(updated_dt, by = c("PREFERRED_NAME", "CASRN"))
-            write.fst(updated_dt, temp_cas_path)
+        if (!nzchar(sheet_id)) {
+            warning("TAXOTOX_SHEET_ID is empty — compound not logged (curation is Sheets-only).")
+            return(invisible(NULL))
         }
+
+        tryCatch({
+            library(googlesheets4)
+            .gs4_auth_auto()
+            googlesheets4::sheet_append(ss = sheet_id, data = new_data)
+        }, error = function(e) {
+            warning("Google Sheets write failed — compound not logged: ", conditionMessage(e))
+        })
     }
 
     # ── pubchem_lookup ────────────────────────────────────────────────────────
@@ -1515,19 +1503,6 @@ server <- function(input, output, session) {
                     }
                 }
 
-                # Other frameworks — single sheet each (no group-specific columns)
-                other_bm <- list(
-                    list(flag = input$bm_eu,   col = "benchmark_eu_eqs_aa_marine_ng_L", label = "Bench. EU EQS"),
-                    list(flag = input$bm_anzg, col = "benchmark_au_anzg_marine_ng_L",   label = "Bench. AU ANZG"),
-                    list(flag = input$bm_ccme, col = "benchmark_ca_ccme_fresh_lt_ng_L", label = "Bench. CA CCME")
-                )
-                for (bm in other_bm) {
-                    if (!bm$flag) next
-                    if (!bm$col %in% names(taxotox_reference)) next
-                    df <- .calc_hi(bm$col, NULL)
-                    if (!is.null(df)) bm_results[[bm$label]] <- df
-                }
-
                 v$benchmark_results <- if (length(bm_results) > 0) bm_results else NULL
             } else {
                 v$benchmark_results <- NULL
@@ -1587,22 +1562,30 @@ server <- function(input, output, session) {
             # Step 1: within each MoA group → CA → group_TU = Σ(C_i / LC50_i)
             # Step 2: group fractional effect: E_group = group_TU / (1 + group_TU)
             # Step 3: between groups → IA: E_mix = 1 − ∏(1 − E_group)
-            # One sheet; rows = samples; columns: E_mix, then one E_group per MoA group.
+            # One sheet per group; rows = samples; columns: E_mix, then one E_group
+            # per MoA group. Computed twice per taxon: once with compounds of
+            # unknown MoA included as their own group (honest default), and once
+            # with them excluded entirely, so the effect of the unknown bucket on
+            # the mixture result is visible rather than hidden inside E_mix.
             if (input$method_cama) {
                 setProgress(0.94, detail = "CAMA: computing...")
 
-                # Join moa_group onto ref_matched (already filtered to matched compounds)
+                # Join moa_group onto ref_matched (already filtered to matched compounds).
+                # moa_group/moa_source are populated by Code/taxotox_install_moa.R and
+                # should already be "unknown" (never NA) for unclassified compounds;
+                # the coalesce here is a defensive fallback only.
                 ref_cama <- ref_matched %>%
                     left_join(
                         taxotox_reference %>%
                             select(cas_number, ecotox_group, moa_group) %>%
                             mutate(moa_group = if_else(is.na(moa_group) | moa_group == "",
-                                                       "narcosis", moa_group)),
+                                                       "unknown", moa_group)),
                         by = c("cas_number", "ecotox_group")
                     )
 
-                .calc_cama <- function(grp) {
+                .calc_cama <- function(grp, exclude_unknown = FALSE) {
                     d <- ref_cama %>% filter(ecotox_group == grp)
+                    if (exclude_unknown) d <- d %>% filter(moa_group != "unknown")
                     if (nrow(d) == 0) return(NULL)
 
                     # Long format: one row per compound × sample
@@ -1641,10 +1624,20 @@ server <- function(input, output, session) {
                 cama_crustacean <- .calc_cama("crustacean")
                 cama_fish       <- .calc_cama("fish")
 
+                cama_algae_known      <- .calc_cama("algae",      exclude_unknown = TRUE)
+                cama_crustacean_known <- .calc_cama("crustacean", exclude_unknown = TRUE)
+                cama_fish_known       <- .calc_cama("fish",       exclude_unknown = TRUE)
+
                 v$cama_results <- Filter(Negate(is.null), list(
                     "CAMA Algae"      = cama_algae,
                     "CAMA Crustacean" = cama_crustacean,
-                    "CAMA Fish"       = cama_fish
+                    "CAMA Fish"       = cama_fish,
+                    # Excel worksheet names are capped at 31 characters --
+                    # "CAMA Crustacean (MoA-known only)" is 32, so all three
+                    # use the shorter "(known MoA)" suffix instead.
+                    "CAMA Algae (known MoA)"      = cama_algae_known,
+                    "CAMA Crustacean (known MoA)" = cama_crustacean_known,
+                    "CAMA Fish (known MoA)"       = cama_fish_known
                 ))
                 if (length(v$cama_results) == 0) v$cama_results <- NULL
             } else {
@@ -1652,14 +1645,14 @@ server <- function(input, output, session) {
             }
 
             # ── A-13: Taxon-Sensitive PTI (Nowell et al. 2014) ────────────────
-            # Denominator: sensitive toxicity concentration (STC), "Approach B"
-            # from Nowell et al. (2014) -- 5th percentile of individual toxicity
-            # test values when n > 12, else the minimum (see stc_nowell_ng_L in
-            # taxotox_reference.fst / Code/taxotox_install.R for the derivation).
-            # Fish uses the full ECOTOX fish population; the crustacean-group row
-            # is restricted to the 17 cladoceran genera Nowell et al. used, so
-            # this method covers fish and cladocerans only (no algae -- Nowell's
-            # method does not cover algae at all).
+            # Denominator: sensitive toxicity concentration (STC) as PUBLISHED
+            # by Nowell et al. (2014) Appendix B (see stc_nowell_ng_L in
+            # taxotox_reference.fst / Code/taxotox_install_nowell.R), not
+            # recomputed from TaxoTox's own ECOTOX pull -- this makes results
+            # directly comparable to the literature (e.g. Covert et al. 2020).
+            # Covers fish and cladocerans only (crustacean-group row is
+            # restricted to Nowell's 17 cladoceran genera); no algae -- Nowell's
+            # method does not cover algae at all.
             if (input$method_nowell) {
                 setProgress(0.97, detail = "Nowell PTI: computing...")
 
@@ -2016,7 +2009,7 @@ server <- function(input, output, session) {
             } else {
                 addWorksheet(wb, "CAMA - No Data")
                 writeData(wb, "CAMA - No Data", data.frame(
-                    Note = "No compounds with MoA group assignments were found. CAMA requires LC50 data and Mode-of-Action classification from the reference table.",
+                    Note = "No compounds with LC50 data were found for CAMA calculation. CAMA requires a valid LC50 denominator for at least one uploaded compound.",
                     stringsAsFactors = FALSE
                 ))
                 setColWidths(wb, "CAMA - No Data", cols = 1, widths = 100)
@@ -2035,9 +2028,9 @@ server <- function(input, output, session) {
                 writeData(wb, "Nowell - No Data", data.frame(
                     Note = paste0(
                         "No Taxon-Sensitive PTI (Nowell et al. 2014) values were found for the ",
-                        "uploaded compounds. This method requires ECOTOX toxicity data for fish, ",
-                        "or for the 17 cladoceran genera Nowell et al. used for the crustacean group; ",
-                        "coverage is narrower than the Standard PTI or Benchmark HI methods."
+                        "uploaded compounds. This method only covers the ~480 fish and ~460 ",
+                        "cladoceran-genus pesticides/degradates Nowell et al. published STC values ",
+                        "for; coverage is narrower than the Standard PTI or Benchmark HI methods."
                     ),
                     stringsAsFactors = FALSE
                 ))

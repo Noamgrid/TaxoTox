@@ -547,8 +547,9 @@ if ("moa_group" %in% names(ref)) {
     group_by(ecotox_group) %>%
     summarise(
       n_moa_assigned    = sum(!is.na(moa_group)),
-      n_moa_specific    = sum(moa_group %in% c("AChE_inhibition", "PSII_inhibition",
-                                                "pyrethroid", "reactive"), na.rm = TRUE),
+      # "Specific" = has a real Kramer et al. (2024) classification, i.e. not
+      # the "unknown" catch-all (see Code/taxotox_install_moa.R).
+      n_moa_specific    = sum(!is.na(moa_group) & moa_group != "unknown", na.rm = TRUE),
       .groups = "drop"
     )
   summary_tbl <- left_join(summary_tbl, moa_cov, by = "ecotox_group")
@@ -608,26 +609,28 @@ moa_summary_tbl <- NULL
 
 if ("moa_group" %in% names(ref)) {
 
-  moa_group_levels <- c("narcosis", "AChE_inhibition", "PSII_inhibition",
-                        "pyrethroid", "reactive")
-
-  # Colour per moa_group (not per source — source shown in hover text)
-  moa_pal <- c(
-    narcosis        = "#cccccc",
-    AChE_inhibition = "#e31a1c",
-    PSII_inhibition = "#33a02c",
-    pyrethroid      = "#ff7f00",
-    reactive        = "#6a3d9a"
-  )
+  # moa_group values come from Kramer et al. (2024) (Code/taxotox_install_moa.R)
+  # and are data-driven, not a fixed list -- derive levels from what's actually
+  # present, most-common first, so the stacked bar and legend stay correct as
+  # the source data's category set changes. "unknown" (compounds with no MoA
+  # classification, per Code/taxotox_install_moa.R) is pushed to the end.
+  moa_group_levels <- ref %>%
+    mutate(moa_group = replace_na(as.character(moa_group), "unknown")) %>%
+    count(moa_group, sort = TRUE) %>%
+    pull(moa_group)
+  moa_group_levels <- c(setdiff(moa_group_levels, "unknown"),
+                        intersect(moa_group_levels, "unknown"))
 
   moa_df <- ref %>%
-    mutate(moa_group  = replace_na(as.character(moa_group),  "narcosis"),
-           moa_source = replace_na(as.character(moa_source), "default_narcosis")) %>%
+    mutate(moa_group  = replace_na(as.character(moa_group),  "unknown"),
+           moa_source = replace_na(as.character(moa_source), "not_in_Kramer2024")) %>%
     count(ecotox_group, moa_group, moa_source) %>%
     mutate(moa_group = factor(moa_group, levels = moa_group_levels))
 
   n_no_moa <- sum(is.na(ref$moa_group))
 
+  # No manual colour palette -- moa_group is now an open-ended, data-driven set
+  # rather than a fixed 5-value list, so let plotly auto-cycle trace colours.
   fig7 <- plot_ly()
   for (grp in moa_group_levels) {
     d <- filter(moa_df, moa_group == grp)
@@ -637,7 +640,6 @@ if ("moa_group" %in% names(ref)) {
         data = d,
         x = ~ecotox_group, y = ~n,
         type = "bar", name = grp,
-        marker = list(color = moa_pal[grp]),
         text = ~paste0("<b>", moa_group, "</b><br>",
                        "Classified by: ", moa_source, "<br>",
                        "N rows: ", n),
@@ -646,15 +648,15 @@ if ("moa_group" %in% names(ref)) {
   }
   fig7 <- fig7 %>%
     layout(
-      title   = "Plot 7 \u2014 Mode of Action Group Coverage by Taxonomic Group",
+      title   = "Plot 7 — Mode of Action Group Coverage by Taxonomic Group",
       xaxis   = list(title = "Taxonomic group"),
-      yaxis   = list(title = "Number of compound\u00d7group rows"),
+      yaxis   = list(title = "Number of compound×group rows"),
       barmode = "stack",
       legend  = list(title = list(text = "Mode of action group")),
       annotations = list(list(
         text = paste0(
           "Hover bars for classification source  |  ",
-          "Rows without Mode of Action assignment (shown as narcosis): ", n_no_moa),
+          "Rows without Mode of Action assignment (shown as unknown): ", n_no_moa),
         xref = "paper", yref = "paper", x = 0, y = -0.14,
         showarrow = FALSE, font = list(size = 11, color = "grey40")
       ))
@@ -662,8 +664,8 @@ if ("moa_group" %in% names(ref)) {
 
   # Summary table: compounds per moa_group × ecotox_group × source
   moa_summary_tbl <- ref %>%
-    mutate(moa_group  = replace_na(as.character(moa_group),  "not assigned"),
-           moa_source = replace_na(as.character(moa_source), "\u2014")) %>%
+    mutate(moa_group  = replace_na(as.character(moa_group),  "unknown"),
+           moa_source = replace_na(as.character(moa_source), "not_in_Kramer2024")) %>%
     count(ecotox_group, moa_group, moa_source) %>%
     arrange(ecotox_group, desc(n)) %>%
     rename(
@@ -674,127 +676,24 @@ if ("moa_group" %in% names(ref)) {
     )
 }
 
-# ── 8c. Plot 8 — Benchmark framework coverage per compound ────────────────────
-# Horizontal stacked bar: one bar per compound that appears in at least one
-# benchmark table, coloured by framework (US EPA, EU EQS, AU ANZG, CA CCME).
-# Sorted from most frameworks (top) to fewest (bottom).
-# Only shown if taxotox_install_benchmarks.R has been run (I-11).
+# ── 8c. Benchmark coverage ──────────────────────────────────────────────────
+# Formerly Plot 8: a horizontal stacked bar comparing coverage across four
+# national benchmark frameworks (US EPA, EU EQS, AU ANZG, CA CCME), sorted by
+# how many frameworks covered each compound. EU EQS / AU ANZG / CA CCME were
+# removed from Code/taxotox_install_benchmarks.R due to low compound coverage
+# (~1-3% each vs. US EPA's ~9-10%) -- with only one framework left, a
+# "coverage per framework" comparison plot no longer says anything a single
+# coverage percentage doesn't already say more simply. taxotox_install_
+# benchmarks.R prints that percentage directly in its own console output;
+# fig8 stays NULL so the (still framework-agnostic) "Benchmarks: YES/NOT RUN"
+# banner further down and the mismatch-table section numbering keep working
+# unchanged.
 
 fig8 <- NULL
 
 bm_check_cols <- c("benchmark_usepa_fish_acute_ng_L",
                    "benchmark_usepa_crust_acute_ng_L",
-                   "benchmark_usepa_algae_acute_ng_L",
-                   "benchmark_eu_eqs_aa_marine_ng_L",
-                   "benchmark_au_anzg_fresh_ng_L",
-                   "benchmark_au_anzg_marine_ng_L",
-                   "benchmark_ca_ccme_fresh_lt_ng_L")
-
-if (any(bm_check_cols %in% names(ref))) {
-
-  # Per unique compound: does it have ANY non-NA value in each of the 4 frameworks?
-  # (Reference table has 3 rows per CAS: fish / algae / crustacean — group before checking)
-  # summarise across() only for columns that actually exist (safe for partial runs).
-  bm_raw <- ref %>%
-    group_by(cas_number, chemical_name) %>%
-    summarise(across(any_of(bm_check_cols), ~ any(!is.na(.x))),
-              .groups = "drop")
-
-  # Helper: TRUE if any of the named columns exist and are TRUE in bm_raw
-  .or_cols <- function(df, cols) {
-    present <- intersect(cols, names(df))
-    if (length(present) == 0) return(rep(FALSE, nrow(df)))
-    rowSums(as.data.frame(df[present])) > 0
-  }
-
-  bm_presence <- bm_raw %>%
-    mutate(
-      in_usepa = .or_cols(bm_raw,
-                   c("benchmark_usepa_fish_acute_ng_L",
-                     "benchmark_usepa_crust_acute_ng_L",
-                     "benchmark_usepa_algae_acute_ng_L")),
-      in_eu    = .or_cols(bm_raw, "benchmark_eu_eqs_aa_marine_ng_L"),
-      in_au    = .or_cols(bm_raw,
-                   c("benchmark_au_anzg_fresh_ng_L", "benchmark_au_anzg_marine_ng_L")),
-      in_ca    = .or_cols(bm_raw, "benchmark_ca_ccme_fresh_lt_ng_L")
-    ) %>%
-    select(cas_number, chemical_name, in_usepa, in_eu, in_au, in_ca) %>%
-    filter(in_usepa | in_eu | in_au | in_ca) %>%
-    mutate(n_frameworks = as.integer(in_usepa) + as.integer(in_eu) +
-                          as.integer(in_au)    + as.integer(in_ca))
-
-  message("Plot 8: ", nrow(bm_presence),
-          " compounds covered by at least one benchmark framework")
-
-  if (nrow(bm_presence) > 0) {
-    # Compound order: most frameworks first; within tie, alphabetical
-    compound_order_bm <- bm_presence %>%
-      arrange(desc(n_frameworks), chemical_name) %>%
-      pull(chemical_name)
-
-    # Long format: one row per compound × framework (only where present = TRUE)
-    bm_long <- bm_presence %>%
-      pivot_longer(cols = c(in_usepa, in_eu, in_au, in_ca),
-                   names_to = "framework", values_to = "present") %>%
-      filter(present) %>%
-      mutate(
-        framework = recode(framework,
-          "in_usepa" = "US EPA",
-          "in_eu"    = "EU EQS",
-          "in_au"    = "AU ANZG",
-          "in_ca"    = "CA CCME"
-        ),
-        framework = factor(framework, levels = c("US EPA", "EU EQS", "AU ANZG", "CA CCME")),
-        y_val = 1L   # each present framework contributes 1 to the stacked total
-      )
-
-    bm_colours <- c(
-      "US EPA"  = "#1f78b4",
-      "EU EQS"  = "#e6ac00",
-      "AU ANZG" = "#33a02c",
-      "CA CCME" = "#e31a1c"
-    )
-
-    plot_h_px <- max(300, nrow(bm_presence) * 18 + 120)
-
-    fig8 <- plot_ly()
-    for (fw in c("US EPA", "EU EQS", "AU ANZG", "CA CCME")) {
-      d <- filter(bm_long, framework == fw)
-      if (nrow(d) == 0) next
-      fig8 <- fig8 %>%
-        add_trace(
-          data = d,
-          y    = ~factor(chemical_name, levels = rev(compound_order_bm)),
-          x    = ~y_val,
-          type = "bar",
-          orientation = "h",
-          name = fw,
-          marker = list(color = bm_colours[fw]),
-          text  = ~paste0("<b>", chemical_name, "</b><br>Framework: ", framework),
-          hoverinfo = "text"
-        )
-    }
-
-    fig8 <- fig8 %>%
-      layout(
-        title   = "Plot 8 \u2014 Benchmark Framework Coverage per Compound",
-        xaxis   = list(title = "Number of benchmark frameworks", dtick = 1,
-                       range = c(0, 4.2)),
-        yaxis   = list(title = "", tickfont = list(size = 10)),
-        barmode = "stack",
-        height  = plot_h_px,
-        legend  = list(title = list(text = "National framework")),
-        margin  = list(l = 220),
-        annotations = list(list(
-          text = paste0(
-            "Sorted: most frameworks (top) to fewest.  ",
-            nrow(bm_presence), " compounds covered by \u22651 benchmark."),
-          xref = "paper", yref = "paper", x = 0, y = -0.06,
-          showarrow = FALSE, font = list(size = 11, color = "grey40")
-        ))
-      )
-  }
-}
+                   "benchmark_usepa_algae_acute_ng_L")
 
 # ── 9. Build HTML report ──────────────────────────────────────────────────────
 
@@ -857,8 +756,8 @@ report <- tagList(
           "fitted from ECOTOX data (n \u2265 5); Both = SSD + scaling factor computed; Scaled = scaling factor only. ",
           tags$b("n_predicted"), " = CompTox/OPERA predictions available (fish and crustacean only; algae has no suitable endpoint). ",
           tags$b("n_moa_assigned"), " = rows with a Mode of Action group assigned. ",
-          tags$b("n_moa_specific"), " = rows assigned to a specific mechanism (acetylcholinesterase inhibition, ",
-          "Photosystem II inhibition, pyrethroid, or reactive) rather than the default narcosis. ",
+          tags$b("n_moa_specific"), " = rows with a real Kramer et al. (2024) Mode of Action classification ",
+          "(e.g. AChE inhibition, Photosynthesis inhibition) rather than the “unknown” catch-all. ",
           "Columns not shown are absent because that install step has not been run yet."),
         as.tags(dt_summary)
       ),
@@ -970,17 +869,21 @@ report <- tagList(
         make_section(
           tags$h2("8. Mode of Action Group Coverage"),
           tags$p(class = "note",
-            tags$b("What this shows: "), "how many compound\u00d7group rows in the reference table ",
-            "have been assigned to a Mode of Action group, and how each was classified. ",
-            tags$b("Blue"), " = classified by chemical name pattern matching (highest confidence — ",
-            "captures major pesticide classes: acetylcholinesterase inhibitors, Photosystem II inhibitors, ",
-            "pyrethroids, reactive chemicals). ",
-            tags$b("Orange"), " = classified by LogKow (Verhaar scheme) where no name pattern matched. ",
-            tags$b("Grey"), " = default assignment to narcosis (no name pattern or LogKow available). ",
+            tags$b("What this shows: "), "how many compound×group rows in the reference table ",
+            "have been assigned to a Mode of Action group, and which group. Groups come from Kramer ",
+            "et al. (2024) (", tags$code("Code/taxotox_install_moa.R"), "), a curated external MoA ",
+            "database keyed by CAS number — they are not a fixed list, so the legend reflects ",
+            "whatever categories are actually present in the current reference table (e.g. ",
+            tags$code("Neuromuscular system"), ", ", tags$code("Photosynthesis inhibition"), "). ",
+            tags$code("unknown"), " marks compounds with no MoA classification available, either ",
+            "because Kramer et al. couldn't classify them or because they're outside that dataset's ",
+            "~3,400-chemical scope — hover a bar segment to see which case applies (",
+            tags$code("moa_source"), " column). ",
             tags$b("Why it matters: "), "for the Concentration Addition with Mode of Action grouping (CAMA) ",
             "method to produce results that differ from standard Concentration Addition, compounds in the ",
-            "same sample must span multiple Mode of Action groups. A table dominated by 'narcosis' means ",
-            "CAMA will return the same result as standard TU/PTI for most samples."),
+            "same sample must span multiple real MoA groups. A table dominated by 'unknown' means CAMA's ",
+            "'all compounds' variant will behave similarly to standard TU/PTI for most samples — see the ",
+            "'known MoA' output variant for a view restricted to compounds with an actual classification."),
           as.tags(fig7),
           tags$br(),
           if (!is.null(moa_summary_tbl))
@@ -992,35 +895,12 @@ report <- tagList(
         )
       } else tags$div(),
 
-      # Plot 8 — Benchmark coverage (conditional)
-      if (!is.null(fig8)) {
-        make_section(
-          tags$h2("9. Benchmark Framework Coverage per Compound"),
-          tags$p(class = "note",
-            tags$b("What this shows: "), "every compound in the reference table that appears in at ",
-            "least one national benchmark table, as a horizontal stacked bar. Each colour segment ",
-            "represents one national framework that provides a benchmark for that compound. ",
-            "Compounds are sorted from most frameworks (top) to fewest (bottom). ",
-            tags$b("Why it matters: "), "benchmark coverage is uneven across compound classes — ",
-            "the EU Environmental Quality Standards list only ~45 priority substances, while US EPA ",
-            "and Canada CCME cover more pesticides. Compounds absent from all benchmarks will receive ",
-            "a Hazard Quotient of zero and contribute nothing to the Hazard Index, underestimating ",
-            "risk in samples dominated by unregulated chemicals. ",
-            tags$b("Colours: "),
-            tags$span(style = "color: #1f78b4; font-weight: bold;", "US EPA"), " | ",
-            tags$span(style = "color: #e6ac00; font-weight: bold;", "EU EQS"), " | ",
-            tags$span(style = "color: #33a02c; font-weight: bold;", "AU ANZG"), " | ",
-            tags$span(style = "color: #e31a1c; font-weight: bold;", "CA CCME"), "."),
-          as.tags(fig8)
-        )
-      } else tags$div(),
-
       # Mismatch table
       if (!is.null(dt_mismatch)) {
         make_section(
-          tags$h2(if (!is.null(fig6) || !is.null(fig7) || !is.null(fig8))
-                    "10. SSD vs Scaled HC5 \u2014 Largest Discrepancies"
-                  else "6. SSD vs Scaled HC5 \u2014 Largest Discrepancies"),
+          tags$h2(if (!is.null(fig6) || !is.null(fig7))
+                    "9. SSD vs Scaled HC5 — Largest Discrepancies"
+                  else "6. SSD vs Scaled HC5 — Largest Discrepancies"),
           tags$p(class = "note",
             tags$b("What this shows: "), "the full table of compound\u00d7group rows where both HC5 methods ",
             "were computed, sorted by |log2(SSD/Scaled)| — largest disagreements first. ",
