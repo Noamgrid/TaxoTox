@@ -31,11 +31,15 @@ setwd(.script_dir)
 #           species-sensitivity denominator when computing Toxic Units (TU).
 #
 # Prerequisites:
-#   1. ECOTOX data must be downloaded at least once -- if run interactively,
-#      Step 0a below will offer to do this before continuing.
+#   1. ECOTOX data must be downloaded at least once -- Step 0a below offers to
+#      do this interactively, or does it automatically (only when a newer
+#      release exists) on non-interactive runs.
 #   2. The SQLite path used below (search for dbConnect(RSQLite::SQLite())
 #      must match the ECOTOXr cache location.
 #      Check with: ECOTOXr::get_ecotox_sqlite_file()
+#   3. Step Z at the end of this file cleans up superseded ECOTOX releases
+#      left behind by Step 0a (prompted interactively, auto with a sanity
+#      guard when non-interactive) -- see that section for details.
 #
 # Frequency : Re-run whenever the ECOTOX database is updated (≈ quarterly).
 #
@@ -118,7 +122,18 @@ library(ECOTOXr)
 library(ssdtools)
 
 #######################################################################
-# Step 0a: Optional ECOTOX database update
+# Baseline row counts (pre-run), used by Step Z's cleanup safety check
+# -----------------------------------------------------------------------
+# Cheap metadata-only reads of whatever final_ecotox_data.fst /
+# taxotox_reference.fst already exist on disk, captured before Step 0a or
+# Step 1 can overwrite them. NA if this is the first-ever run.
+.prev_final_ecotox_n <- tryCatch(nrow(fst::fst("../Data/final_ecotox_data.fst")),
+                                  error = function(e) NA_integer_)
+.prev_reference_n    <- tryCatch(nrow(fst::fst("../Data/taxotox_reference.fst")),
+                                  error = function(e) NA_integer_)
+
+#######################################################################
+# Step 0a: ECOTOX database update
 # -----------------------------------------------------------------------
 # Merged in from the former standalone update_ecotox.R (deleted -- this was
 # the only thing it did beyond re-running this file, and having two entry
@@ -126,15 +141,20 @@ library(ssdtools)
 # Downloads the latest EPA ECOTOX Knowledgebase release (hundreds of MB,
 # 10-30 min) and rebuilds the local SQLite cache Step 1 below reads from.
 #
-# Unlike every other section in this file, this one does NOT use
-# .ask_run() -- that helper auto-answers "yes" for every section when run
-# non-interactively (Rscript), which is right for the comparatively cheap,
-# idempotent steps elsewhere in this file but wrong here: silently
-# re-downloading a multi-hundred-MB release on every unattended install run
-# would be a real regression, not a convenience. This step only ever
-# prompts when interactive; a non-interactive run always skips it and
-# proceeds with whatever ECOTOX snapshot is already cached (this file's
-# normal ~quarterly-refresh cadence).
+# Interactive runs: manual y/n prompt, same as always -- a human is present
+# to watch a multi-hundred-MB download happen.
+#
+# Non-interactive runs (Rscript): unlike every other section in this file,
+# this does NOT use .ask_run() -- that helper auto-answers "yes" for every
+# section when run non-interactively, which is right for the comparatively
+# cheap, idempotent steps elsewhere in this file but would be wrong here if
+# applied blindly (unconditionally re-downloading hundreds of MB on every
+# unattended run). Instead, it checks the release version first via
+# check_ecotox_version() and only downloads when a newer release actually
+# exists -- so scheduled/automated installs stay current without ever
+# re-downloading data that's already up to date. A failed/offline version
+# check fails open (treated as up to date) so an unattended run never
+# hard-blocks on a network hiccup.
 if (interactive()) {
   ans <- toupper(trimws(readline(
     "Check for a new ECOTOX release before building the reference table? [Data download, 10-30 min] [y/n]: "
@@ -145,7 +165,19 @@ if (interactive()) {
     message("ECOTOX database update complete.")
   }
 } else {
-  message("Step 0a: SKIPPED (non-interactive run) -- using the currently cached ECOTOX database.")
+  message("Step 0a: non-interactive run -- checking ECOTOX release version...")
+  up_to_date <- tryCatch(ECOTOXr::check_ecotox_version(), error = function(e) {
+    message("Step 0a: version check failed (", conditionMessage(e),
+            ") -- using cached database.")
+    TRUE
+  })
+  if (isFALSE(up_to_date)) {
+    message("Step 0a: newer ECOTOX release available -- downloading automatically...")
+    ECOTOXr::download_ecotox_data(ask = FALSE)
+    message("Step 0a: ECOTOX database update complete.")
+  } else {
+    message("Step 0a: already on the latest ECOTOX release -- skipping download.")
+  }
 }
 
 #######################################################################
@@ -177,7 +209,18 @@ if (interactive()) {
         "%d compound(s) pending curation in the Google Sheet. Run taxotox_curate.R now? [y/n]: ",
         .n_pending_curation
       ))))
-      if (ans == "Y") source("taxotox_curate.R")
+      if (ans == "Y") {
+        # taxotox_curate.R stop()s intentionally when there's nothing left to
+        # review (e.g. every pending row turns out to already be in
+        # Known_CAS) -- fine when it's run standalone, but a bare source()
+        # here would let that stop() abort this entire install run. Catch it
+        # and continue instead.
+        tryCatch(
+          source("taxotox_curate.R"),
+          error = function(e) message("Step 0b: taxotox_curate.R stopped early (",
+                                       conditionMessage(e), ") -- continuing install.")
+        )
+      }
     } else {
       message(sprintf(
         "Step 0b: %d compound(s) pending curation in the Google Sheet -- run taxotox_curate.R interactively to review them.",
@@ -1106,6 +1149,91 @@ if (.ask_run("S_i12_moa",
   .mark_done("S_i12_moa")
 } else {
   message("S_i12_moa skipped.")
+}
+
+#######################################################################
+# Step Z: ECOTOX SQLite cache housekeeping
+# -----------------------------------------------------------------------
+# download_ecotox_data() (Step 0a) never deletes superseded releases --
+# every dated ecotox_ascii_MM_DD_YYYY.sqlite (+ .log, _cit.txt, extracted
+# ASCII folder) accumulates in the ECOTOXr cache dir
+# (ECOTOXr::get_ecotox_path()) forever unless removed by hand.
+# get_ecotox_sqlite_file() (Step 1 above, and validate_benchmarks.R) always
+# auto-selects the newest one, so a stale copy costs disk space (~1-1.5 GB
+# each) rather than correctness -- but it's easy to forget about.
+#
+# Deliberately the LAST step in this script: only clean up a superseded
+# release once the full pipeline above has successfully rebuilt
+# final_ecotox_data.fst / taxotox_reference.fst and execution reached this
+# point without error.
+#
+# Interactive: list superseded release(s) and prompt before deleting, same
+# as every other manual step in this file -- a human is present to review.
+#
+# Non-interactive: auto-delete, but only if this run's rebuild looks sane --
+# compare the row counts just produced against the pre-run baseline
+# captured near the top of this file (.prev_final_ecotox_n /
+# .prev_reference_n). Skip (and warn) if either dropped below 90% of its
+# previous value, or if there was no previous baseline to compare against
+# (first-ever run) -- in both cases, leaving the old release in place as a
+# fallback is safer than guessing.
+.ecotox_cache_dir <- ECOTOXr::get_ecotox_path()
+.ecotox_local <- attr(ECOTOXr::check_ecotox_availability(.ecotox_cache_dir), "files")
+
+if (!is.null(.ecotox_local) && nrow(.ecotox_local) > 1) {
+  .ecotox_keep  <- .ecotox_local$database[which.max(.ecotox_local$date)]
+  .ecotox_stale <- setdiff(.ecotox_local$database, .ecotox_keep)
+  .ecotox_stale_stub <- sub("\\.sqlite$", "", .ecotox_stale)
+
+  .delete_stale_ecotox_releases <- function(stubs, cache_dir) {
+    for (s in stubs) {
+      f_sqlite <- file.path(cache_dir, paste0(s, ".sqlite"))
+      f_log    <- file.path(cache_dir, paste0(s, ".log"))
+      f_cit    <- file.path(cache_dir, paste0(s, "_cit.txt"))
+      f_dir    <- file.path(cache_dir, s)
+      if (file.exists(f_sqlite)) file.remove(f_sqlite)
+      if (file.exists(f_log))    file.remove(f_log)
+      if (file.exists(f_cit))    file.remove(f_cit)
+      if (dir.exists(f_dir))     unlink(f_dir, recursive = TRUE)
+      message("  Deleted: ", s)
+    }
+  }
+
+  message(sprintf(
+    "\nStep Z: %d superseded ECOTOX release(s) found (keeping %s):",
+    length(.ecotox_stale_stub), .ecotox_keep
+  ))
+  for (s in .ecotox_stale_stub) message("  - ", s, " (.sqlite, .log, _cit.txt, extracted folder)")
+
+  if (interactive()) {
+    ans <- toupper(trimws(readline(
+      "Delete superseded release(s) now to free disk space? [y/n]: "
+    )))
+    if (ans == "Y") {
+      .delete_stale_ecotox_releases(.ecotox_stale_stub, .ecotox_cache_dir)
+    } else {
+      message("Step Z: skipped -- superseded release(s) left in place.")
+    }
+  } else {
+    .new_final_ecotox_n <- tryCatch(nrow(fst::fst("../Data/final_ecotox_data.fst")),
+                                     error = function(e) NA_integer_)
+    .new_reference_n    <- tryCatch(nrow(fst::fst("../Data/taxotox_reference.fst")),
+                                     error = function(e) NA_integer_)
+    .rebuild_looks_sane <-
+      !is.na(.prev_final_ecotox_n) && !is.na(.prev_reference_n) &&
+      !is.na(.new_final_ecotox_n) && !is.na(.new_reference_n) &&
+      .new_final_ecotox_n >= 0.9 * .prev_final_ecotox_n &&
+      .new_reference_n    >= 0.9 * .prev_reference_n
+
+    if (.rebuild_looks_sane) {
+      message("Step Z: non-interactive run, rebuild looks sane -- auto-deleting superseded release(s)...")
+      .delete_stale_ecotox_releases(.ecotox_stale_stub, .ecotox_cache_dir)
+    } else {
+      message("Step Z: SKIPPED -- non-interactive run and rebuild size could not be confirmed sane ",
+              "(no prior baseline, or row counts dropped >10%). Superseded release(s) left in place; ",
+              "review manually before deleting.")
+    }
+  }
 }
 
 #######################################################################

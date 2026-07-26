@@ -72,6 +72,24 @@ the production server.
 Downloaded via the `ECOTOXr` R package (`ECOTOXr::download_ecotox_data()`); stored
 locally as a SQLite file and updated approximately quarterly.
 
+**Cache versioning and updates**: `download_ecotox_data()` never overwrites or deletes
+a previous release — each download adds a new dated
+`ecotox_ascii_MM_DD_YYYY.sqlite` (plus a sibling extracted-ASCII folder, `.log`, and
+`_cit.txt` file) to the local ECOTOXr cache directory
+(`ECOTOXr::get_ecotox_path()`). `taxotox_install.R`'s Step 0a checks for a newer
+release: interactively, it prompts before downloading; non-interactively (e.g.
+scheduled/automated runs), it checks the release version via
+`ECOTOXr::check_ecotox_version()` and downloads automatically only when a newer
+release actually exists, so unattended installs stay current without ever
+re-downloading data that's already up to date (a failed/offline version check fails
+open and just uses the cached database). `get_ecotox_sqlite_file()` — used both by
+Step 1 below and by `validate_benchmarks.R` — always auto-selects the most recently
+dated release present in the cache, so no code changes are ever needed after an
+update. Step Z, the final step of `taxotox_install.R`, cleans up superseded releases
+once a rebuild against the newest one has completed: prompted interactively, or
+automatically (guarded by a row-count sanity check against the pre-run baseline) on
+non-interactive runs.
+
 **Query logic** (`taxotox_install.R`, Steps 1–4):
 
 - Taxa: fish (`ecotox_group LIKE '%fish%'`), algae (`'%algae%'`), crustacean (`'%crustacean%'`)
