@@ -12,29 +12,33 @@
 setwd(.script_dir)
 
 # =============================================================================
-# taxotox_install_benchmarks.R  (step I-6)
+# taxotox_install_benchmarks.R  (steps I-6, I-7)
 # -----------------------------------------------------------------------------
-# Purpose : Parse the US EPA aquatic benchmark table and join it into
-#           taxotox_reference.fst as denominator columns for the
+# Purpose : Parse the US EPA and EU WFD aquatic benchmark tables and join them
+#           into taxotox_reference.fst as denominator columns for the
 #           Benchmark Hazard Index method.
 #
 # Source  :
-#   I-6  Data/USEPA_aquatic_benchmarks.csv — US EPA Aquatic Life Benchmarks
+#   I-6  Data/USEPA_aquatic_benchmarks.csv   — US EPA Aquatic Life Benchmarks
+#   I-7  Data/EUEPA_aquatic_benchmarks.csv   — EU WFD Directive 2013/39/EU
 #
-# EU WFD EQS, Australia ANZG, and Canada CCME (formerly steps I-7/I-8/I-9)
-# were removed: compound coverage in TaxoTox's reference table was too low to
-# be useful (EU EQS ~0.9%, AU ANZG ~1.3-2.8%, CA CCME ~2.1%, vs. US EPA's
-# ~8.6-10.4%). Data/EUEPA_aquatic_benchmarks.csv, Data/Australia_aquatic_
-# benchmarks.csv, and Data/Canada_aquatic_benchmarks.csv are no longer read
-# by this script but were left in Data/ in case coverage improves enough in a
-# future source revision to reconsider.
+# Australia ANZG and Canada CCME (formerly steps I-8/I-9) were removed:
+# compound coverage in TaxoTox's reference table was too low to be useful
+# (AU ANZG ~1.3-2.8%, CA CCME ~2.1%, vs. US EPA's ~8.6-10.4%). EU EQS was
+# removed for the same reason (~0.9%) but reinstated after review -- its
+# absolute compound coverage was judged wide enough to be useful despite the
+# low percentage of TaxoTox's full (much broader) compound universe.
+# Data/Australia_aquatic_benchmarks.csv and Data/Canada_aquatic_benchmarks.csv
+# are no longer read by this script but were left in Data/ in case coverage
+# improves enough in a future source revision to reconsider.
 #
 # All source values are in µg/L; output stored as ng/L (× 1000).
 #
-# Output  : Updates ../Data/taxotox_reference.fst in place with 3 columns:
+# Output  : Updates ../Data/taxotox_reference.fst in place with 4 columns:
 #   benchmark_usepa_fish_acute_ng_L
 #   benchmark_usepa_crust_acute_ng_L
 #   benchmark_usepa_algae_acute_ng_L
+#   benchmark_eu_eqs_aa_marine_ng_L
 #
 # Denominator selection rationale (documented in TaxoTox_Technical_Methods.md):
 #   US EPA  : acute columns only (fish = raw col 4, invertebrate = raw col 8,
@@ -42,6 +46,7 @@ setwd(.script_dir)
 #             verified against EPA's live benchmarks page, NOT the same as
 #             the positions the duplicate-header auto-rename suggests)
 #             Chronic columns are retained in source but not used as TU denominators
+#   EU EQS  : Annual Average EQS — the only value provided in this CSV extract
 #
 # Prerequisites : taxotox_reference.fst must exist (run taxotox_install.R first)
 # Authors : Yair Suari & Noam Gridish, 2025
@@ -227,26 +232,64 @@ message(sprintf("    algae acute : %d non-NA", sum(!is.na(usepa$benchmark_usepa_
 message("  Sanity check passed: USEPA column mapping verified against Chlorpyrifos and Dichlorvos reference values.")
 
 # =============================================================================
-# Join US EPA benchmarks into taxotox_reference.fst
+# I-7  EU WFD Environmental Quality Standards (Directive 2013/39/EU)
 # =============================================================================
-message("\n--- Joining US EPA benchmarks into taxotox_reference.fst ---")
+message("\n--- I-7: EU WFD Environmental Quality Standards ---")
+
+eu_path <- "../Data/EUEPA_aquatic_benchmarks.csv"
+if (!file.exists(eu_path)) stop("Missing: ", eu_path)
+
+# File structure: 4 rows of legend, then row 5 = column header, data from row 6.
+# Only 4 columns present: name, sub-name/blank, CAS, AA-EQS value (µg/L).
+# This CSV contains only the single AA-EQS value — no separate inland/marine split.
+eu_raw <- read.csv(eu_path, skip = 4, header = FALSE, stringsAsFactors = FALSE,
+                   col.names = c("name", "subname", "cas_number", "aa_eqs_raw"))
+
+eu <- eu_raw %>%
+  slice(-1) %>%   # drop the column-header row now stored as data
+  mutate(
+    cas_number = trimws(cas_number),
+    # Prefer sub-name for grouped entries (e.g. aldrin, dieldrin listed under parent)
+    cas_number = ifelse(nzchar(trimws(subname)) & !nzchar(cas_number),
+                        NA_character_, cas_number)
+  ) %>%
+  filter(grepl("^[0-9]+-[0-9]+-[0-9]+$", cas_number)) %>%
+  mutate(
+    cas_number = gsub("-", "", cas_number),
+    benchmark_eu_eqs_aa_marine_ng_L = .parse_benchmark(aa_eqs_raw) * UG_TO_NG
+  ) %>%
+  select(cas_number, benchmark_eu_eqs_aa_marine_ng_L) %>%
+  group_by(cas_number) %>%
+  slice_max(order_by = !is.na(benchmark_eu_eqs_aa_marine_ng_L),
+            n = 1, with_ties = FALSE) %>%
+  ungroup()
+
+message(sprintf("  EU EQS: %d compounds parsed, %d with AA-EQS value",
+                nrow(eu), sum(!is.na(eu$benchmark_eu_eqs_aa_marine_ng_L))))
+
+# =============================================================================
+# Join benchmarks into taxotox_reference.fst
+# =============================================================================
+message("\n--- Joining benchmarks into taxotox_reference.fst ---")
 
 ref <- read.fst("../Data/taxotox_reference.fst", as.data.table = FALSE) %>%
   mutate(cas_number = as.character(cas_number))
 
-# Drop any existing benchmark columns (safe re-run) -- includes the retired EU
-# EQS / AU ANZG / CA CCME columns so a re-run also cleans up a reference table
-# built before they were removed, not just adds the current US EPA ones.
+# Drop any existing benchmark columns (safe re-run) -- includes the retired AU
+# ANZG / CA CCME columns so a re-run also cleans up a reference table built
+# before they were removed, not just adds the current US EPA/EU EQS ones.
 benchmark_cols <- c("benchmark_usepa_fish_acute_ng_L",
                     "benchmark_usepa_crust_acute_ng_L",
-                    "benchmark_usepa_algae_acute_ng_L")
-retired_benchmark_cols <- c("benchmark_eu_eqs_aa_marine_ng_L",
-                            "benchmark_au_anzg_fresh_ng_L",
+                    "benchmark_usepa_algae_acute_ng_L",
+                    "benchmark_eu_eqs_aa_marine_ng_L")
+retired_benchmark_cols <- c("benchmark_au_anzg_fresh_ng_L",
                             "benchmark_au_anzg_marine_ng_L",
                             "benchmark_ca_ccme_fresh_lt_ng_L")
 ref <- ref %>% select(-any_of(c(benchmark_cols, retired_benchmark_cols)))
 
-ref <- ref %>% left_join(usepa, by = "cas_number")
+ref <- ref %>%
+  left_join(usepa, by = "cas_number") %>%
+  left_join(eu,    by = "cas_number")
 
 # Coverage report
 message("\nBenchmark coverage in reference table:")

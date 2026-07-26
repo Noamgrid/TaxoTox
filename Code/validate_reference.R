@@ -676,24 +676,119 @@ if ("moa_group" %in% names(ref)) {
     )
 }
 
-# ── 8c. Benchmark coverage ──────────────────────────────────────────────────
-# Formerly Plot 8: a horizontal stacked bar comparing coverage across four
-# national benchmark frameworks (US EPA, EU EQS, AU ANZG, CA CCME), sorted by
-# how many frameworks covered each compound. EU EQS / AU ANZG / CA CCME were
-# removed from Code/taxotox_install_benchmarks.R due to low compound coverage
-# (~1-3% each vs. US EPA's ~9-10%) -- with only one framework left, a
-# "coverage per framework" comparison plot no longer says anything a single
-# coverage percentage doesn't already say more simply. taxotox_install_
-# benchmarks.R prints that percentage directly in its own console output;
-# fig8 stays NULL so the (still framework-agnostic) "Benchmarks: YES/NOT RUN"
-# banner further down and the mismatch-table section numbering keep working
-# unchanged.
+# ── 8c. Plot 8 — Benchmark framework coverage per compound ────────────────────
+# Horizontal stacked bar: one bar per compound that appears in at least one
+# benchmark table, coloured by framework (US EPA, EU EQS). Sorted from most
+# frameworks (top) to fewest (bottom). AU ANZG / CA CCME were removed from
+# Code/taxotox_install_benchmarks.R due to low compound coverage (~1-3% each
+# vs. US EPA's ~9-10%); EU EQS was removed for the same reason (~0.9%) but
+# reinstated after review since its absolute coverage was judged useful.
+# Only shown if taxotox_install_benchmarks.R has been run (I-6/I-7).
 
 fig8 <- NULL
 
 bm_check_cols <- c("benchmark_usepa_fish_acute_ng_L",
                    "benchmark_usepa_crust_acute_ng_L",
-                   "benchmark_usepa_algae_acute_ng_L")
+                   "benchmark_usepa_algae_acute_ng_L",
+                   "benchmark_eu_eqs_aa_marine_ng_L")
+
+if (any(bm_check_cols %in% names(ref))) {
+
+  # Per unique compound: does it have ANY non-NA value in each framework?
+  # (Reference table has 3 rows per CAS: fish / algae / crustacean — group before checking)
+  # summarise across() only for columns that actually exist (safe for partial runs).
+  bm_raw <- ref %>%
+    group_by(cas_number, chemical_name) %>%
+    summarise(across(any_of(bm_check_cols), ~ any(!is.na(.x))),
+              .groups = "drop")
+
+  # Helper: TRUE if any of the named columns exist and are TRUE in bm_raw
+  .or_cols <- function(df, cols) {
+    present <- intersect(cols, names(df))
+    if (length(present) == 0) return(rep(FALSE, nrow(df)))
+    rowSums(as.data.frame(df[present])) > 0
+  }
+
+  bm_presence <- bm_raw %>%
+    mutate(
+      in_usepa = .or_cols(bm_raw,
+                   c("benchmark_usepa_fish_acute_ng_L",
+                     "benchmark_usepa_crust_acute_ng_L",
+                     "benchmark_usepa_algae_acute_ng_L")),
+      in_eu    = .or_cols(bm_raw, "benchmark_eu_eqs_aa_marine_ng_L")
+    ) %>%
+    select(cas_number, chemical_name, in_usepa, in_eu) %>%
+    filter(in_usepa | in_eu) %>%
+    mutate(n_frameworks = as.integer(in_usepa) + as.integer(in_eu))
+
+  message("Plot 8: ", nrow(bm_presence),
+          " compounds covered by at least one benchmark framework")
+
+  if (nrow(bm_presence) > 0) {
+    # Compound order: most frameworks first; within tie, alphabetical
+    compound_order_bm <- bm_presence %>%
+      arrange(desc(n_frameworks), chemical_name) %>%
+      pull(chemical_name)
+
+    # Long format: one row per compound × framework (only where present = TRUE)
+    bm_long <- bm_presence %>%
+      pivot_longer(cols = c(in_usepa, in_eu),
+                   names_to = "framework", values_to = "present") %>%
+      filter(present) %>%
+      mutate(
+        framework = recode(framework,
+          "in_usepa" = "US EPA",
+          "in_eu"    = "EU EQS"
+        ),
+        framework = factor(framework, levels = c("US EPA", "EU EQS")),
+        y_val = 1L   # each present framework contributes 1 to the stacked total
+      )
+
+    bm_colours <- c(
+      "US EPA"  = "#1f78b4",
+      "EU EQS"  = "#e6ac00"
+    )
+
+    plot_h_px <- max(300, nrow(bm_presence) * 18 + 120)
+
+    fig8 <- plot_ly()
+    for (fw in c("US EPA", "EU EQS")) {
+      d <- filter(bm_long, framework == fw)
+      if (nrow(d) == 0) next
+      fig8 <- fig8 %>%
+        add_trace(
+          data = d,
+          y    = ~factor(chemical_name, levels = rev(compound_order_bm)),
+          x    = ~y_val,
+          type = "bar",
+          orientation = "h",
+          name = fw,
+          marker = list(color = bm_colours[fw]),
+          text  = ~paste0("<b>", chemical_name, "</b><br>Framework: ", framework),
+          hoverinfo = "text"
+        )
+    }
+
+    fig8 <- fig8 %>%
+      layout(
+        title   = "Plot 8 — Benchmark Framework Coverage per Compound",
+        xaxis   = list(title = "Number of benchmark frameworks", dtick = 1,
+                       range = c(0, 2.2)),
+        yaxis   = list(title = "", tickfont = list(size = 10)),
+        barmode = "stack",
+        height  = plot_h_px,
+        legend  = list(title = list(text = "National framework")),
+        margin  = list(l = 220),
+        annotations = list(list(
+          text = paste0(
+            "Sorted: most frameworks (top) to fewest.  ",
+            nrow(bm_presence), " compounds covered by ≥1 benchmark."),
+          xref = "paper", yref = "paper", x = 0, y = -0.06,
+          showarrow = FALSE, font = list(size = 11, color = "grey40")
+        ))
+      )
+  }
+}
 
 # ── 9. Build HTML report ──────────────────────────────────────────────────────
 
@@ -895,11 +990,32 @@ report <- tagList(
         )
       } else tags$div(),
 
+      # Plot 8 — Benchmark coverage (conditional)
+      if (!is.null(fig8)) {
+        make_section(
+          tags$h2("9. Benchmark Framework Coverage per Compound"),
+          tags$p(class = "note",
+            tags$b("What this shows: "), "every compound in the reference table that appears in at ",
+            "least one national benchmark table, as a horizontal stacked bar. Each colour segment ",
+            "represents one national framework that provides a benchmark for that compound. ",
+            "Compounds are sorted from most frameworks (top) to fewest (bottom). ",
+            tags$b("Why it matters: "), "benchmark coverage is uneven across compound classes — ",
+            "the EU Environmental Quality Standards list only ~45 priority substances, while US EPA ",
+            "covers more pesticides. Compounds absent from all benchmarks will receive ",
+            "a Hazard Quotient of zero and contribute nothing to the Hazard Index, underestimating ",
+            "risk in samples dominated by unregulated chemicals. ",
+            tags$b("Colours: "),
+            tags$span(style = "color: #1f78b4; font-weight: bold;", "US EPA"), " | ",
+            tags$span(style = "color: #e6ac00; font-weight: bold;", "EU EQS"), "."),
+          as.tags(fig8)
+        )
+      } else tags$div(),
+
       # Mismatch table
       if (!is.null(dt_mismatch)) {
         make_section(
-          tags$h2(if (!is.null(fig6) || !is.null(fig7))
-                    "9. SSD vs Scaled HC5 — Largest Discrepancies"
+          tags$h2(if (!is.null(fig6) || !is.null(fig7) || !is.null(fig8))
+                    "10. SSD vs Scaled HC5 — Largest Discrepancies"
                   else "6. SSD vs Scaled HC5 — Largest Discrepancies"),
           tags$p(class = "note",
             tags$b("What this shows: "), "the full table of compound\u00d7group rows where both HC5 methods ",

@@ -174,15 +174,18 @@ ui <- fluidPage(
                 checkboxInput("method_nowell",    "Taxon-Sensitive PTI (Nowell et al. 2014)", value = FALSE),
 
                 # Benchmark sub-selector (A-6) — below all methods, shown only when benchmark is checked
-                # EU EQS / AU ANZG / CA CCME were removed due to low compound coverage
-                # (<3% each in the current reference table) -- US EPA is the only
-                # remaining framework, kept ~10% coverage.
+                # AU ANZG / CA CCME were removed due to low compound coverage (<3% each
+                # in the reference table). EU EQS was removed for the same reason but
+                # reinstated after review -- its absolute compound coverage was judged
+                # wide enough to be useful despite the low percentage of TaxoTox's full
+                # (much broader) compound universe.
                 conditionalPanel(
                     condition = "input.method_benchmark == true",
                     hr(style = "margin:6px 0;"),
                     tags$p(style = "margin-bottom:4px; font-weight:bold; font-size:13px;",
                            "Benchmarks:"),
                     checkboxInput("bm_usepa", "US EPA",  value = TRUE),
+                    checkboxInput("bm_eu",    "EU EQS",  value = FALSE),
                     hr(style = "margin:6px 0;")
                 ),
 
@@ -488,7 +491,8 @@ server <- function(input, output, session) {
         }
         if (input$method_benchmark) {
             bm_cols <- c(
-                if (input$bm_usepa) "benchmark_usepa_fish_acute_ng_L"  else NULL
+                if (input$bm_usepa) "benchmark_usepa_fish_acute_ng_L"  else NULL,
+                if (input$bm_eu)    "benchmark_eu_eqs_aa_marine_ng_L"  else NULL
             )
             for (col in bm_cols) {
                 if (!col %in% names(ref_matched)) next
@@ -496,7 +500,8 @@ server <- function(input, output, session) {
                     distinct(cas_number) %>% nrow()
                 pct <- round(100 * n_covered / max(n, 1))
                 label <- switch(col,
-                    benchmark_usepa_fish_acute_ng_L  = "US EPA")
+                    benchmark_usepa_fish_acute_ng_L  = "US EPA",
+                    benchmark_eu_eqs_aa_marine_ng_L  = "EU EQS")
                 if (pct < 80) msgs <- c(msgs, sprintf("%s: %d%% compound coverage", label, pct))
             }
         }
@@ -1501,6 +1506,12 @@ server <- function(input, output, session) {
                         df <- .calc_hi(g$col, g$grp)
                         if (!is.null(df)) bm_results[[g$label]] <- df
                     }
+                }
+
+                # EU EQS — single sheet (no group-specific columns)
+                if (input$bm_eu && "benchmark_eu_eqs_aa_marine_ng_L" %in% names(taxotox_reference)) {
+                    df <- .calc_hi("benchmark_eu_eqs_aa_marine_ng_L", NULL)
+                    if (!is.null(df)) bm_results[["Bench. EU EQS"]] <- df
                 }
 
                 v$benchmark_results <- if (length(bm_results) > 0) bm_results else NULL
