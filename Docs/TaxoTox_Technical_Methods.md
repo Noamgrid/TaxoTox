@@ -58,7 +58,6 @@ the production server.
 | `benchmark_usepa_fish_acute_ng_L` | numeric | US EPA — freshwater fish, acute (ng/L) |
 | `benchmark_usepa_crust_acute_ng_L` | numeric | US EPA — freshwater invertebrate, acute (ng/L) |
 | `benchmark_usepa_algae_acute_ng_L` | numeric | US EPA — nonvascular plant (algae), acute (ng/L) |
-| `benchmark_eu_eqs_aa_marine_ng_L` | numeric | EU Water Framework Directive — Annual Average Environmental Quality Standard for marine/estuarine waters (ng/L) |
 | `stc_nowell_ng_L` | numeric | Nowell et al. (2014) sensitive toxicity concentration, read directly from their published Appendix B table (ng/L); crustacean row = cladoceran-genus-restricted only (see Section 10.6) |
 | `n_stc_nowell` | integer | Nowell et al.'s published "No. bioassays" count behind `stc_nowell_ng_L` |
 
@@ -282,14 +281,13 @@ where $C_i$ is the measured concentration of compound $i$ and $BM_i$ is the sele
 national benchmark. The interpretation thresholds are the same as for Pollution Toxicity
 Index: $HI \geq 1$ indicates exceedance of the benchmark, $HI < 0.1$ indicates low risk.
 
-The method currently implements two frameworks, US EPA and EU EQS (see Section 6.3 for
-why two other national frameworks TaxoTox previously supported were removed, and why EU
-EQS specifically was removed and then reinstated).
+The method currently implements the US EPA framework only (see Section 6.3 for why the
+other three national frameworks TaxoTox previously supported were removed).
 
 ### 6.2 Benchmark Source
 
 All benchmark values are stored in `taxotox_reference.fst` as columns in ng/L.
-Source files are in `Data/` and are parsed by `Code/taxotox_install_benchmarks.R`.
+The source file is in `Data/` and is parsed by `Code/taxotox_install_benchmarks.R`.
 Source values are in µg/L; multiplication by 1000 converts to ng/L.
 
 #### US EPA Aquatic Life Benchmarks
@@ -312,24 +310,14 @@ measured concentrations by an acute protective value; using chronic benchmarks a
 Index denominators would mix protection levels and invalidate the HI interpretation.
 Chronic columns are present in the source file but are not used as denominators.
 
-#### EU WFD Environmental Quality Standards
+### 6.3 Coverage, and Why Three Frameworks Were Removed
 
-**Source**: EU Water Framework Directive, Directive 2013/39/EU Annex I (~45 priority
-substances).
-**File**: `Data/EUEPA_aquatic_benchmarks.csv`
-
-Unlike the US EPA table, this source provides only a single Annual Average EQS value per
-substance (no separate acute/chronic or taxon-specific split) — `benchmark_eu_eqs_aa_
-marine_ng_L`. Where a substance is listed under a parent/sub-name grouping (e.g. aldrin
-and dieldrin reported under a combined cyclodiene pesticides entry), the sub-name row's
-CAS number is preferred.
-
-### 6.3 Coverage, and Why Two Frameworks Were Removed (and EU EQS Reinstated)
-
-TaxoTox previously also implemented Australia/New Zealand ANZG 2018 Default Guideline
-Values at the 95% species protection level (`benchmark_au_anzg_fresh_ng_L` /
-`_marine_ng_L`) and Canada CCME freshwater long-term guidelines
-(`benchmark_ca_ccme_fresh_lt_ng_L`). Both were removed from
+TaxoTox previously also implemented three additional frameworks: EU Water Framework
+Directive Environmental Quality Standards (Directive 2013/39/EU Annex I, ~45 priority
+substances, `benchmark_eu_eqs_aa_marine_ng_L`), Australia/New Zealand ANZG 2018 Default
+Guideline Values at the 95% species protection level (`benchmark_au_anzg_fresh_ng_L` /
+`_marine_ng_L`), and Canada CCME freshwater long-term guidelines
+(`benchmark_ca_ccme_fresh_lt_ng_L`). All three were removed from
 `Code/taxotox_install_benchmarks.R` and the app's benchmark sub-selector because their
 compound coverage in TaxoTox's reference table was too low to be useful:
 
@@ -340,32 +328,23 @@ compound coverage in TaxoTox's reference table was too low to be useful:
 | AU ANZG (freshwater / marine) | ~2.8% / ~1.3% |
 | CA CCME | ~2.1% |
 
-EU EQS was removed for the same low-coverage reason initially, but reinstated after
-review: its coverage as a *percentage* of TaxoTox's full reference table looks similar to
-the other removed frameworks, but that denominator includes TaxoTox's entire, much
-broader compound universe (CompTox gap-fill compounds, Nowell-published compounds, etc.).
-In absolute terms the EU list's ~45 priority substances were judged a useful enough panel
-to keep as a second framework, unlike AU ANZG/CA CCME.
+For compounds absent from the US EPA table, the Hazard Quotient for that compound is not
+computed and contributes zero to the Hazard Index — this means the Hazard Index
+underestimates risk when coverage is poor, which is itself a reason to prefer a framework
+with meaningfully higher coverage over one that would rarely contribute anything.
+Coverage is reported at the end of `Code/taxotox_install_benchmarks.R`'s console output
+on every run.
 
-For compounds absent from a selected framework's table, the Hazard Quotient for that
-compound is not computed and contributes zero to that framework's Hazard Index — this
-means the Hazard Index underestimates risk when coverage is poor for the compounds in a
-given sample. Coverage is reported at the end of `Code/taxotox_install_benchmarks.R`'s
-console output on every run.
-
-The two removed frameworks' source files (`Data/Australia_aquatic_benchmarks.csv`,
-`Data/Canada_aquatic_benchmarks.csv`) were left in `Data/` in case a future revision of
-those sources improves coverage enough to reconsider — re-adding them would mean
-restoring the I-8/I-9 parsing logic described in `Docs/TaxoTox_Redesign_Plan.md`'s version
-history for this file.
+The three removed frameworks' source files (`Data/EUEPA_aquatic_benchmarks.csv`,
+`Data/Australia_aquatic_benchmarks.csv`, `Data/Canada_aquatic_benchmarks.csv`) were left
+in `Data/` in case a future revision of those sources improves coverage enough to
+reconsider — re-adding them would mean restoring the I-7/I-8/I-9 parsing logic described
+in `Docs/TaxoTox_Redesign_Plan.md`'s version history for this file.
 
 ### 6.4 References
 
 - US EPA (various years). *Aquatic Life Benchmarks and Ecological Risk Assessments for
   Registered Pesticides*. Office of Pesticide Programs, Washington DC.
-- European Union (2013). *Directive 2013/39/EU of the European Parliament and of the
-  Council amending Directives 2000/60/EC and 2008/105/EC as regards priority substances
-  in the field of water policy*. Annex I: Environmental Quality Standards.
 
 ---
 

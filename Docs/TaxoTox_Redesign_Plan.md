@@ -9,8 +9,8 @@ All new methods are opt-in under an "Advanced" panel.
 
 1. **Gap-fill LC50 via CompTox API** — predicted LC50 for compounds absent from ECOTOX
 2. **SSD / HC5 denominator** — alternative to ECOTOX median, computed at install time
-3. **Benchmark-based Hazard Index** — US EPA and EU EQS (AU ANZG, CA CCME were later
-   removed for low coverage; EU EQS was also removed then reinstated — see I-7/I-8/I-9 below)
+3. **Benchmark-based Hazard Index** — US EPA (EU EQS, AU ANZG, CA CCME were later removed
+   for low coverage — see I-7/I-8/I-9 below)
 4. **Independent Action (IA)** — fixed Hill slope n=1
 5. **CAMA** — Mode-of-Action grouped CA within groups → IA between groups
 6. **Curation script** — private tool to promote `temp_CAS` → `Known_CAS` and fill reference table
@@ -68,19 +68,14 @@ For n_ecotox = 0 rows (added at step I-2+), `predicted_lc50_ng_L × k` is used i
   `AcuteC` algae). The TU formula divides by an acute lethal endpoint (LC50/EC50); using chronic
   benchmarks would mix protection levels. No guideline recommends chronic benchmarks as TU
   denominators within the standard CA framework.
-- **EU EQS denominator**: Annual Average EQS for "Other surface waters" (marine/coastal/transitional),
-  reflecting TaxoTox's primary use in estuarine and coastal monitoring.
+- ~~**EU EQS denominator**: Annual Average EQS for "Other surface waters" (marine/coastal/transitional),
+  reflecting TaxoTox's primary use in estuarine and coastal monitoring.~~
 - ~~**Australia ANZG**: LOSP 95% (95% species protection) for both freshwater and marine.~~
 - ~~**Canada CCME**: Freshwater Long-Term (chronic) guideline — most comprehensive table.~~
-- **Australia ANZG / Canada CCME — removed**: both denominators above were removed from
-  `taxotox_install_benchmarks.R` and the app; compound coverage in TaxoTox's reference
-  table was too low to be useful (~1.3–2.8%, ~2.1% respectively, vs. US EPA's ~8.6–10.4%).
-  See `TaxoTox_Technical_Methods.md` Section 6.3.
-- **EU EQS — removed, then reinstated**: initially removed alongside AU ANZG/CA CCME for
-  the same low-coverage reasoning (~0.9% of reference-table rows), but restored after
-  review: its coverage as an absolute panel (~45 priority substances) was judged useful
-  despite the low percentage against TaxoTox's much broader full compound universe. See
-  `TaxoTox_Technical_Methods.md` Section 6.3.
+- **EU EQS / Australia ANZG / Canada CCME — removed**: all three denominators above were
+  removed from `taxotox_install_benchmarks.R` and the app; compound coverage in
+  TaxoTox's reference table was too low to be useful (~0.9%, ~1.3–2.8%, ~2.1%
+  respectively, vs. US EPA's ~8.6–10.4%). See `TaxoTox_Technical_Methods.md` Section 6.3.
 
 ---
 
@@ -97,11 +92,11 @@ Items are struck through when complete. Updated after each implementation chunk.
 - [x] ~~**I-4**  Write `taxotox_reference.fst` at end of install (all columns populated)~~
 - [x] ~~**I-5**  Write `taxotox_install_benchmarks.R` skeleton~~
 - [x] ~~**I-6**  Parse `USEPA_aquatic_benchmarks.csv` — handle duplicate column names; extract acute columns per taxon~~
-- [x] ~~**I-7**  Parse `EUEPA_aquatic_benchmarks.csv` — skip 6-row header; extract AA-EQS marine column; strip value qualifiers~~ — **removed, then reinstated**: initially removed for ~0.9% compound coverage in the reference table, but restored to `taxotox_install_benchmarks.R` after review judged its absolute coverage (~45 priority substances) useful despite the low percentage. See `TaxoTox_Technical_Methods.md` Section 6.3.
-- [x] ~~**I-8**  Parse `Australia_aquatic_benchmarks.csv` — split Freshwater / Marine rows; use LOSP 95~~ — **removed**: ~1.3–2.8% coverage; parsing logic deleted from `taxotox_install_benchmarks.R`, source CSV left in `Data/` unused.
-- [x] ~~**I-9**  Parse `Canada_aquatic_benchmarks.csv` — use Freshwater Long Term; coerce `"No data"` / `"NRG"` → NA~~ — **removed**: ~2.1% coverage; same treatment as I-8.
+- [x] ~~**I-7**  Parse `EUEPA_aquatic_benchmarks.csv` — skip 6-row header; extract AA-EQS marine column; strip value qualifiers~~ — **removed**: ~0.9% compound coverage in the reference table; parsing logic deleted from `taxotox_install_benchmarks.R`, source CSV left in `Data/` unused. See `TaxoTox_Technical_Methods.md` Section 6.3.
+- [x] ~~**I-8**  Parse `Australia_aquatic_benchmarks.csv` — split Freshwater / Marine rows; use LOSP 95~~ — **removed**: ~1.3–2.8% coverage; same treatment as I-7.
+- [x] ~~**I-9**  Parse `Canada_aquatic_benchmarks.csv` — use Freshwater Long Term; coerce `"No data"` / `"NRG"` → NA~~ — **removed**: ~2.1% coverage; same treatment as I-7.
 - [x] ~~**I-10** China GB 3838-2002~~ — excluded (insufficient coverage of emerging contaminants)
-- [x] ~~**I-11** Join all parsed benchmarks into `taxotox_reference.fst` by `cas_number`~~ — joins the US EPA (I-6) and EU EQS (I-7) tables after I-8/I-9's removal; the join step itself is no longer separately numbered in `taxotox_install_benchmarks.R`.
+- [x] ~~**I-11** Join all parsed benchmarks into `taxotox_reference.fst` by `cas_number`~~ — now joins only the US EPA table (I-6) after I-7/I-8/I-9's removal; the join step itself is no longer separately numbered in `taxotox_install_benchmarks.R`.
 - [x] ~~**V-1**  Run `taxotox_install.R` end-to-end; confirm `taxotox_reference.fst` produced correctly~~ 8,365 rows; all planned columns present
 - [x] ~~**V-2**  Spot-check `hc5_ssd_ng_L` against published SSDs for 3–5 well-studied compounds~~ Confirmed for atrazine, chlorpyrifos, diuron, permethrin, copper; cross-group CHECK flags expected (guidelines set by most-sensitive group)
 - [x] ~~**V-3**  Verify `predicted_lc50_ng_L` (CompTox) matches published OPERA values for 5 test compounds~~ Not applicable — gap-fill targets compounds absent from ECOTOX; no overlap for direct comparison; accepted on basis of published OPERA performance (RMSE ~0.6–0.8 log-units)
@@ -125,13 +120,13 @@ Items are struck through when complete. Updated after each implementation chunk.
 
 - [x] ~~**A-4** Add collapsible "Advanced Assessment" panel in sidebar (hidden by default)~~
 - [x] ~~**A-5** Add method checkboxes: HC5, Benchmark HI, IA, CAMA~~
-- [x] ~~**A-6** Add benchmark sub-selector: US EPA, EU EQS, AU ANZG, CA CCME~~ (appears below all method checkboxes when Benchmark HI is ticked) — **AU ANZG / CA CCME checkboxes later removed** for low coverage; **EU EQS checkbox also removed then reinstated**; sub-selector now shows US EPA and EU EQS.
+- [x] ~~**A-6** Add benchmark sub-selector: US EPA, EU EQS, AU ANZG, CA CCME~~ (appears below all method checkboxes when Benchmark HI is ticked) — **EU EQS / AU ANZG / CA CCME checkboxes later removed** for low coverage; sub-selector now shows US EPA only.
 - [x] ~~**A-7** Advanced Results tab~~ — **design changed**: no screen tab; advanced results go to a second Excel file only
 - [x] ~~**A-8** Add coverage warning when selected method has poor compound coverage~~ (amber box in sidebar, threshold < 80%)
 - [x] ~~**A-8b** Duplicate CASRN warning~~ — amber box at top of CASRN Matching tab when two input names resolve to the same CASRN
 - [x] ~~**A-9** HC5-based TU/PTI calculation~~ — `v$hc5_results`: three sheets (`HC5 Algae/Crustacean/Fish`) written to advanced Excel
 - [x] ~~**A-13a** Download logic~~ — single `.xlsx` when basic only; `.zip` with `taxotox_basic_*.xlsx` + `taxotox_advanced_*.xlsx` when advanced methods selected; button labels update accordingly
-- [x] ~~**A-10** Benchmark Hazard Index — calculation~~ — `v$benchmark_results`: US EPA produces three group-specific sheets (`Bench. US EPA (Fish/Crust/Algae)`) using acute columns; EU EQS produces one additional sheet (`Bench. EU EQS`); HI first column. (AU ANZG / CA CCME originally each produced one additional sheet too; that code path was removed for low coverage and not reinstated — see I-8/I-9 above.)
+- [x] ~~**A-10** Benchmark Hazard Index — calculation~~ — `v$benchmark_results`: US EPA produces three group-specific sheets (`Benchmark HI - US EPA (Fish/Crustacean/Algae)`) using acute columns; HI first column. (EU EQS / AU ANZG / CA CCME originally each produced one additional sheet; that code path was removed for low coverage — see I-7/I-8/I-9 above.)
 - [x] ~~**A-11** IA (Hill n=1) — calculation~~ — `v$ia_results`: three sheets (`IA Algae/Crustacean/Fish`); E_mix first column, per-compound E_i columns after; same LC50 denominator as standard TU
 - [x] ~~**A-12** CAMA — MoA grouping → CA → IA~~ — `v$cama_results`: **six** sheets (`CAMA Algae/Crustacean/Fish` + `CAMA Algae/Crustacean/Fish (known MoA)`); E_mix first, then per-MoA E_group columns. Groups come from Kramer et al. (2024) rather than a fixed list (see I-3 above); the "known MoA" variant excludes the `unknown` group entirely, since real classifications currently cover only a fraction of compounds. (Sheet names use `"(known MoA)"` rather than `"(MoA-known only)"` -- the latter pushes `"CAMA Crustacean (MoA-known only)"` to 32 characters, over Excel's 31-character worksheet name limit; this actually broke the advanced download once and was fixed.)
 - [x] ~~**A-14** HC5 Method Coverage sheet~~ — **dropped**: coverage is shown in the sidebar warning and in `validate_reference.R` Plot 8; a dedicated Excel sheet adds complexity without new information for the end user

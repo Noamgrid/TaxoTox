@@ -160,12 +160,10 @@ alongside the standard calculation on the same button press:
   (HC5) instead of the median LC50 as the denominator, a more protective, regulatory-style
   threshold. Produces systematically higher PTI values than the standard method.
 - **Benchmark Hazard Index** — replaces the LC50 denominator with a national regulatory
-  benchmark. Two frameworks: **US EPA** (Aquatic Life Benchmarks) and **EU EQS** (Water
-  Framework Directive Environmental Quality Standards, ~45 priority substances). AU ANZG
-  and CA CCME were removed because their compound coverage in TaxoTox's reference table
-  was too low to be useful (each under 3%, vs. US EPA's ~9–10%); EU EQS is lower still in
-  percentage terms (~0.9%) but was kept since its absolute coverage of ~45 substances was
-  judged a useful panel — see `TaxoTox_Technical_Methods.md` Section 6.3.
+  benchmark: **US EPA** (Aquatic Life Benchmarks). Three other frameworks (EU EQS, AU
+  ANZG, CA CCME) were removed because their compound coverage in TaxoTox's reference
+  table was too low to be useful (each under 3%, vs. US EPA's ~9–10%) — see
+  `TaxoTox_Technical_Methods.md` Section 6.3.
 - **Independent Action (IA)** — an alternative to the default Concentration Addition
   model; treats compounds as acting independently rather than additively. More appropriate
   when a mixture is dominated by one or two potent, specifically-acting compounds.
