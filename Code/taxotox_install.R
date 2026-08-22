@@ -422,14 +422,21 @@ final_ecotox_data <- filterd_ecotox_data_conc_unit %>%
   )) %>%
   # Compute final concentration in ng/L.
   mutate(conc_ng_L = min_concentration * factor_to_ng_L) %>%
-  # Strip label decorators so endpoint values become canonical "EC50" / "LC50".
-  #   "(log)EC50" → "EC50",  "LC50*" → "LC50",  "LC50/" → "LC50"
+  # Strip label decorators so endpoint values become canonical "EC50" / "LC50" / "IC50".
+  #   "(log)EC50" → "EC50",  "LC50*" → "LC50",  "LC50/" → "LC50",  "IC50/" → "IC50"
   mutate(endpoint = str_remove(endpoint, "^\\(log\\)"),
          endpoint = str_replace_all(endpoint, "[*/]", "")) %>%
-  # Keep only acute lethal / effective-concentration endpoints.
+  # Keep only acute lethal / effective-/inhibitory-concentration endpoints.
   # These represent the most widely reported, standardised benchmarks in ECOTOX
-  # and are the denominators in the Toxic Unit (TU) framework.
-  filter(endpoint %in% c("LC50", "EC50")) %>%
+  # and are the denominators in the Toxic Unit (TU) framework. IC50 is included
+  # alongside EC50 for algae in particular: ECOTOX's IC50 rows share the exact
+  # same effect/measurement code profile as its EC50 rows (population growth
+  # rate, biomass, chlorophyll, photosynthesis) -- different source studies
+  # label the identical growth-inhibition assay "IC50" vs "EC50" depending on
+  # publication convention, not a biological difference. Confirmed empirically:
+  # 234 compounds have BOTH an EC50 and an IC50 algae result in ECOTOX. See
+  # Docs/TaxoTox_Technical_Methods.md Section 5.4.
+  filter(endpoint %in% c("LC50", "EC50", "IC50")) %>%
   mutate(effect = str_replace_all(effect, "[~/]", ""))
 
 # Step 5: Summary table (median per chemical × taxonomic group).
@@ -726,12 +733,19 @@ if (!nzchar(COMPTOX_KEY)) {
 
   # --- Safe HTTP helpers ---------------------------------------------------
 
+  # A stalled TCP connection (no response, no RST) hangs httr's underlying
+  # curl call indefinitely if no timeout is set -- observed directly: a
+  # rebuild sat blocked for 5.7+ hours on a single POST with ~0 CPU usage.
+  # 30s is generous for a JSON API response; a genuinely stalled connection
+  # will not resolve by waiting longer, so this timeout is what lets
+  # max_tries actually retry instead of the whole pipeline hanging forever.
   .ctox_get <- function(path, ..., max_tries = 3L) {
     url <- paste0(COMPTOX_BASE, path)
     for (i in seq_len(max_tries)) {
       resp <- tryCatch(
         GET(url, add_headers("x-api-key" = COMPTOX_KEY,
-                             "accept" = "application/json"), ...),
+                             "accept" = "application/json"),
+            httr::timeout(30), ...),
         error = function(e) NULL
       )
       if (!is.null(resp) && status_code(resp) == 200L) return(resp)
@@ -740,6 +754,13 @@ if (!nzchar(COMPTOX_KEY)) {
     NULL
   }
 
+  # 120s (not 30s): the /chemical/property/predicted/search/by-dtxsid/
+  # endpoint returns EVERY predicted property per compound (hundreds of QSAR
+  # model rows), not just the 2 we filter for client-side. Measured directly:
+  # 200 DTXSIDs -> ~19MB / ~94s; 1000 DTXSIDs didn't finish in 120s (10.9MB
+  # received and still going). 120s covers .fetch_props's smaller batch size
+  # (see below) with margin, and is still generous for the much lighter
+  # /chemical/detail/search/by-dtxsid/ (MW) endpoint's 1000-item batches.
   .ctox_post <- function(path, body_vec, ..., max_tries = 3L) {
     url  <- paste0(COMPTOX_BASE, path)
     body <- toJSON(body_vec, auto_unbox = FALSE)
@@ -749,7 +770,7 @@ if (!nzchar(COMPTOX_KEY)) {
              add_headers("x-api-key"    = COMPTOX_KEY,
                          "accept"       = "application/json",
                          "content-type" = "application/json"),
-             body = body, encode = "raw", ...),
+             body = body, encode = "raw", httr::timeout(120), ...),
         error = function(e) NULL
       )
       if (!is.null(resp) && status_code(resp) == 200L) return(resp)
@@ -776,10 +797,27 @@ if (!nzchar(COMPTOX_KEY)) {
 
   message("Step I-2b: CAS \u2192 DTXSID lookup (", length(target_cas), " compounds)...")
 
-  dtxsid_map <- purrr::map_dfr(seq_along(target_cas), function(i) {
-    cas <- target_cas[i]
+  # CAS->DTXSID is a static/definitional mapping (not time-varying), so a
+  # prior run's cache is safe to reuse indefinitely -- only CAS numbers not
+  # already in the cache need a live API call. This turns a ~2,600-call,
+  # multi-hour sequential lookup into a few-second cache load on every rerun
+  # except when Known_CAS has genuinely new CAS numbers.
+  .dtxsid_cache_path <- "../Data/dtxsid_map.csv"
+  dtxsid_cache <- if (file.exists(.dtxsid_cache_path)) {
+    tryCatch(read.csv(.dtxsid_cache_path, stringsAsFactors = FALSE, colClasses = "character"),
+             error = function(e) NULL)
+  } else NULL
+
+  cached_cas <- if (!is.null(dtxsid_cache)) intersect(target_cas, dtxsid_cache$cas_number) else character(0)
+  new_cas    <- setdiff(target_cas, cached_cas)
+
+  message(sprintf("  %d / %d CAS reused from cache; %d need a live lookup",
+                  length(cached_cas), length(target_cas), length(new_cas)))
+
+  dtxsid_new <- purrr::map_dfr(seq_along(new_cas), function(i) {
+    cas <- new_cas[i]
     if (i %% 100 == 0)
-      message(sprintf("  %d / %d", i, length(target_cas)))
+      message(sprintf("  %d / %d", i, length(new_cas)))
 
     resp <- .ctox_get(paste0("/chemical/search/equal/", utils::URLencode(cas, reserved = TRUE)))
     if (is.null(resp))
@@ -802,6 +840,14 @@ if (!nzchar(COMPTOX_KEY)) {
       preferred_name = as.character(hit$preferredName[1] %||% NA)
     )
   })
+
+  dtxsid_map <- bind_rows(
+    if (length(cached_cas) > 0)
+      dtxsid_cache %>% filter(cas_number %in% cached_cas) %>%
+        mutate(mw_g_mol = suppressWarnings(as.numeric(mw_g_mol)))
+    else tibble(),
+    dtxsid_new
+  )
 
   message(sprintf("  DTXSID resolved : %d / %d",
                   sum(!is.na(dtxsid_map$dtxsid)), length(target_cas)))
@@ -830,14 +876,25 @@ if (!nzchar(COMPTOX_KEY)) {
     })
   }
 
-  all_dtxsids <- dtxsid_map$dtxsid[!is.na(dtxsid_map$dtxsid)]
-  mw_table    <- .fetch_detail_mw(all_dtxsids)
+  # Cached rows already carry mw_g_mol from a prior run's I-2b2 -- only fetch
+  # MW for dtxsids that don't have it yet (new compounds, or cached ones that
+  # never resolved a value).
+  if (!"mw_g_mol" %in% names(dtxsid_map)) dtxsid_map$mw_g_mol <- NA_real_
+  needs_mw    <- dtxsid_map$dtxsid[!is.na(dtxsid_map$dtxsid) & is.na(dtxsid_map$mw_g_mol)]
+  message(sprintf("  %d / %d DTXSIDs already have MW from cache; %d need a fetch",
+                  sum(!is.na(dtxsid_map$dtxsid) & !is.na(dtxsid_map$mw_g_mol)),
+                  sum(!is.na(dtxsid_map$dtxsid)), length(needs_mw)))
+  mw_table    <- .fetch_detail_mw(needs_mw)
 
   dtxsid_map  <- dtxsid_map %>%
-    left_join(mw_table, by = "dtxsid")
+    left_join(mw_table, by = "dtxsid", suffix = c("", "_new")) %>%
+    mutate(mw_g_mol = dplyr::coalesce(mw_g_mol, mw_g_mol_new)) %>%
+    select(-any_of("mw_g_mol_new"))
 
   message(sprintf("  MW available    : %d / %d DTXSIDs",
                   sum(!is.na(dtxsid_map$mw_g_mol)), sum(!is.na(dtxsid_map$dtxsid))))
+
+  all_dtxsids <- dtxsid_map$dtxsid[!is.na(dtxsid_map$dtxsid)]
 
   # --- I-2c: OPERA aquatic toxicity predictions (batch POST) ---------------
   #
@@ -855,7 +912,12 @@ if (!nzchar(COMPTOX_KEY)) {
   PROP_CRUST <- "48 Hour Daphnia Magna LC50"
 
   # Helper: batch-fetch a property endpoint and pivot to wide format
-  .fetch_props <- function(dtxsids, endpoint, prop_names, batch_size = 1000L) {
+  # batch_size = 150, not 1000: this endpoint returns every predicted
+  # property per compound (hundreds of rows each), so a 1000-item batch's
+  # response is enormous and unreliable -- measured directly: 200 items took
+  # ~94s/~19MB, 1000 items didn't complete in 120s. 150 keeps each request
+  # comfortably inside .ctox_post's 120s timeout.
+  .fetch_props <- function(dtxsids, endpoint, prop_names, batch_size = 150L) {
     batches <- split(dtxsids, ceiling(seq_along(dtxsids) / batch_size))
     purrr::map_dfr(seq_along(batches), function(i) {
       batch <- batches[[i]]

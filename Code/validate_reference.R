@@ -36,6 +36,8 @@ setwd(.script_dir)
 #   6. Coverage by lc50_source          — how many compounds gained a denominator
 #   7. Mode of Action group coverage    — compounds per group per ecotox_group (if I-3 ran)
 #   8. Benchmark framework coverage     — compounds per national benchmark (if I-11 ran)
+#   9. CAMA vs Standard PTI convergence — E_mix vs PTI on the repo's own sample workbooks
+#                                         (if I-3 ran and Data/sample_*.xlsx are present)
 #
 # Authors : Yair Suari & Noam Gridish, 2025
 # =============================================================================
@@ -326,6 +328,79 @@ for (grp in names(group_colours)) {
     )
 }
 
+# ── 5b. Plot 3b — EC50 vs IC50 medians per compound × group ─────────────────
+# Same interchangeability check as Plot 3, applied to the EC50/IC50 pair added
+# to the pooled median alongside LC50/EC50 (Docs §5.4). IC50 rows only exist
+# in `ecotox` once taxotox_install.R's endpoint filter includes "IC50" (i.e.
+# after a rebuild) -- fig3b stays NULL on old data so this section is simply
+# omitted from the report rather than erroring.
+
+fig3b <- NULL
+
+ic50_med <- ecotox %>%
+  filter(endpoint == "IC50", !is.na(conc_ng_L), conc_ng_L > 0) %>%
+  group_by(cas_number, ecotox_group) %>%
+  summarise(median_ic50 = median(conc_ng_L, na.rm = TRUE),
+            n_ic50      = n(),
+            .groups     = "drop")
+
+p3b_df <- inner_join(ec50_med, ic50_med, by = c("cas_number", "ecotox_group")) %>%
+  filter(median_ec50 > 0, median_ic50 > 0)
+
+if (nrow(p3b_df) > 0) {
+  # chemical_name isn't in ec50_med -- pull it back in for hover text
+  p3b_df <- p3b_df %>%
+    left_join(lc50_med %>% distinct(cas_number, chemical_name), by = "cas_number")
+
+  message("Plot 3b: ", nrow(p3b_df), " compound×group pairs with both EC50 and IC50 data")
+
+  ax_range3b <- range(log10(c(p3b_df$median_ec50, p3b_df$median_ic50)), na.rm = TRUE)
+  ax_lim3b   <- 10^(ax_range3b + c(-0.5, 0.5))
+
+  fig3b <- plot_ly()
+  for (grp in names(group_colours)) {
+    d <- filter(p3b_df, ecotox_group == grp)
+    if (nrow(d) == 0) next
+    fig3b <- fig3b %>%
+      add_trace(
+        data = d,
+        x = ~median_ec50, y = ~median_ic50,
+        type = "scatter", mode = "markers",
+        name = grp,
+        text = ~paste0("<b>", chemical_name, "</b><br>CAS: ", cas_number,
+                       "<br>Median EC50: ", signif(median_ec50, 3), " ng/L (n=", n_ec50, ")",
+                       "<br>Median IC50: ", signif(median_ic50, 3), " ng/L (n=", n_ic50, ")",
+                       "<br>IC50/EC50 ratio: ", round(median_ic50 / median_ec50, 2)),
+        hoverinfo = "text",
+        marker = list(size = 6, color = group_colours[grp], opacity = 0.7)
+      )
+  }
+
+  pair_counts3b <- p3b_df %>% count(ecotox_group) %>%
+    mutate(label = paste0(ecotox_group, ": n=", n)) %>%
+    pull(label) %>% paste(collapse = "  |  ")
+
+  fig3b <- fig3b %>%
+    add_trace(
+      x = ax_lim3b, y = ax_lim3b,
+      type = "scatter", mode = "lines",
+      name = "EC50 = IC50",
+      line = list(color = "black", dash = "dash", width = 1.2),
+      inherit = FALSE, showlegend = TRUE
+    ) %>%
+    layout(
+      title = "Plot 3b — Median EC50 vs Median IC50 per compound × group",
+      xaxis = list(title = "Median EC50 (ng/L)", type = "log"),
+      yaxis = list(title = "Median IC50 (ng/L)", type = "log"),
+      legend = list(title = list(text = "Taxonomic group")),
+      annotations = list(list(
+        text = pair_counts3b,
+        xref = "paper", yref = "paper", x = 0, y = -0.12,
+        showarrow = FALSE, font = list(size = 11, color = "grey40")
+      ))
+    )
+}
+
 # Count pairs per group for annotation
 pair_counts <- p3_df %>% count(ecotox_group) %>%
   mutate(label = paste0(ecotox_group, ": n=", n)) %>%
@@ -546,10 +621,13 @@ if ("moa_group" %in% names(ref)) {
   moa_cov <- ref %>%
     group_by(ecotox_group) %>%
     summarise(
-      n_moa_assigned    = sum(!is.na(moa_group)),
       # "Specific" = has a real Kramer et al. (2024) classification, i.e. not
       # the "unknown" catch-all (see Code/taxotox_install_moa.R).
       n_moa_specific    = sum(!is.na(moa_group) & moa_group != "unknown", na.rm = TRUE),
+      # moa_group is guaranteed non-NA (always "unknown" rather than NA for
+      # unclassified compounds -- see Code/taxotox_install_moa.R:144), so a
+      # is.na() count would always read 0. Count the "unknown" label itself.
+      n_moa_unknown     = sum(moa_group == "unknown", na.rm = TRUE),
       .groups = "drop"
     )
   summary_tbl <- left_join(summary_tbl, moa_cov, by = "ecotox_group")
@@ -572,8 +650,9 @@ dt_summary <- datatable(
     "Both = SSD + scaling factor both computed; ",
     "Scaled = scaling factor only; ",
     "n_predicted = CompTox/OPERA predictions (fish + crustacean only); ",
-    "n_moa_assigned = rows with Mode of Action group; ",
-    "n_moa_specific = rows with a specific mechanism (non-narcosis).")
+    "n_moa_specific = rows with a real, curated Mode of Action classification; ",
+    "n_moa_unknown = rows with no MoA classification available (Kramer et al. either ",
+    "could not classify the compound or does not cover it).")
 )
 
 # Top mismatches between SSD and Scaled (for audit)
@@ -627,7 +706,9 @@ if ("moa_group" %in% names(ref)) {
     count(ecotox_group, moa_group, moa_source) %>%
     mutate(moa_group = factor(moa_group, levels = moa_group_levels))
 
-  n_no_moa <- sum(is.na(ref$moa_group))
+  # moa_group is guaranteed non-NA (see Code/taxotox_install_moa.R:144); an
+  # is.na() count here would always read 0, so count the "unknown" label.
+  n_no_moa <- sum(ref$moa_group == "unknown", na.rm = TRUE)
 
   # No manual colour palette -- moa_group is now an open-ended, data-driven set
   # rather than a fixed 5-value list, so let plotly auto-cycle trace colours.
@@ -695,6 +776,175 @@ bm_check_cols <- c("benchmark_usepa_fish_acute_ng_L",
                    "benchmark_usepa_crust_acute_ng_L",
                    "benchmark_usepa_algae_acute_ng_L")
 
+# ── 8d. Plot 9 — CAMA vs Standard PTI convergence diagnostic ────────────────
+# Checks a specific concern: CAMA's E_mix tends to correlate almost perfectly
+# (rho ~ 1) with standard TU-sum PTI in practice, which can look suspicious --
+# as if the Mode of Action grouping isn't doing anything. It isn't a bug: the
+# closed form obtained by substituting Step 2 into Step 3 of the CAMA formula
+# (Docs/TaxoTox_Technical_Methods.md §10.5.2) is
+#   E_mix = 1 - exp(-Σ_g log(1 + group_TU_g))
+# which reduces to 1 - exp(-PTI) ≈ PTI whenever every group_TU_g ≪ 1 --
+# true for nearly every real water sample -- regardless of how many distinct
+# MoA groups exist. This section measures that directly against the repo's
+# own sample monitoring workbooks (Data/sample_*.xlsx) rather than relying on
+# it being noticed by eye in the live app.
+#
+# Compound-name -> CASRN matching here replicates only the Known_CAS exact-
+# match layer of app.R's CASRN pipeline (app.R:997-1006) -- sufficient for
+# these curated sample files, which were built to resolve via that layer
+# alone; it is not a substitute for the app's full PubChem/manual-entry flow.
+#
+# Two variants are computed per taxon, both with PTI and CAMA restricted to
+# the SAME compound subset so the comparison isolates the CA-vs-CAMA formula
+# effect from the "unknown"-coverage effect already covered by Plot 7/8b:
+#   "all compounds"   -- what the app's own PTI and CAMA "all" sheets show
+#   "known MoA only"  -- PTI and CAMA both restricted to compounds with a
+#                        real Kramer et al. (2024) classification
+
+fig9 <- NULL
+cama_diag_tbl <- NULL
+
+sample_files <- list.files("../Data", pattern = "^sample_.*\\.xlsx$", full.names = TRUE)
+
+if ("moa_group" %in% names(ref) && length(sample_files) > 0 &&
+    file.exists("../Data/Known_CAS.fst")) {
+
+  known_cas <- read.fst("../Data/Known_CAS.fst", as.data.table = FALSE)
+
+  # Mirrors app.R's .calc_tox() (app.R:1374-1386) and .calc_cama()
+  # (app.R:1586-1621), computed together on the same compound subset so PTI
+  # and E_mix are directly comparable row-for-row.
+  .calc_pti_cama <- function(denom_tbl, user_data, exclude_unknown) {
+    if (exclude_unknown) denom_tbl <- denom_tbl %>% filter(moa_group != "unknown")
+    if (nrow(denom_tbl) == 0) return(NULL)
+
+    conc_long <- denom_tbl %>%
+      select(PREFERRED_NAME, moa_group, median_conc) %>%
+      left_join(user_data, by = "PREFERRED_NAME") %>%
+      pivot_longer(cols = -c(PREFERRED_NAME, moa_group, median_conc),
+                   names_to = "Sample", values_to = "C") %>%
+      mutate(TU = if_else(is.na(C) | is.na(median_conc), 0, C / median_conc))
+
+    pti <- conc_long %>%
+      group_by(Sample) %>%
+      summarise(PTI = sum(TU, na.rm = TRUE), .groups = "drop")
+
+    e_group <- conc_long %>%
+      group_by(Sample, moa_group) %>%
+      summarise(group_TU = sum(TU, na.rm = TRUE), .groups = "drop") %>%
+      mutate(E_group = group_TU / (1 + group_TU))
+
+    e_mix <- e_group %>%
+      group_by(Sample) %>%
+      summarise(E_mix        = 1 - prod(1 - E_group),
+                max_group_TU = max(group_TU),
+                n_groups     = n_distinct(moa_group[group_TU > 0]),
+                .groups = "drop")
+
+    left_join(pti, e_mix, by = "Sample")
+  }
+
+  cama_diag_rows <- list()
+
+  for (f in sample_files) {
+    d <- tryCatch(readxl::read_excel(f), error = function(e) NULL)
+    if (is.null(d) || ncol(d) < 2) next
+    names(d)[1] <- "PREFERRED_NAME"
+    d <- d %>% mutate(across(-PREFERRED_NAME, ~suppressWarnings(as.numeric(.x))))
+
+    matched <- known_cas[known_cas$PREFERRED_NAME %in% d$PREFERRED_NAME, ] %>%
+      distinct(PREFERRED_NAME, .keep_all = TRUE) %>%
+      mutate(cas_number = gsub("-", "", CASRN)) %>%
+      select(PREFERRED_NAME, cas_number)
+    if (nrow(matched) == 0) next
+
+    ref_matched <- ref %>%
+      filter(cas_number %in% matched$cas_number) %>%
+      mutate(median_conc = dplyr::coalesce(median_lc50_ng_L, predicted_lc50_ng_L),
+             moa_group   = if_else(is.na(moa_group) | moa_group == "", "unknown", moa_group)) %>%
+      filter(!is.na(median_conc)) %>%
+      # relationship = "many-to-many": a sample file can legitimately list two
+      # synonym rows for the same CASRN (see Docs §11 "Synonym handling and
+      # duplicate CASRN detection") -- app.R's own ref_matched join
+      # (app.R:1363) has the same shape and accepts the same double-counting.
+      left_join(matched, by = "cas_number", relationship = "many-to-many") %>%
+      filter(!is.na(PREFERRED_NAME)) %>%
+      select(PREFERRED_NAME, cas_number, ecotox_group, median_conc, moa_group)
+
+    for (grp in c("algae", "crustacean", "fish")) {
+      denom <- ref_matched %>% filter(ecotox_group == grp)
+      if (nrow(denom) == 0) next
+
+      res_all   <- .calc_pti_cama(denom, d, exclude_unknown = FALSE)
+      res_known <- .calc_pti_cama(denom, d, exclude_unknown = TRUE)
+
+      if (!is.null(res_all))
+        cama_diag_rows[[length(cama_diag_rows) + 1]] <-
+          res_all %>% mutate(dataset = basename(f), ecotox_group = grp, variant = "all compounds")
+      if (!is.null(res_known))
+        cama_diag_rows[[length(cama_diag_rows) + 1]] <-
+          res_known %>% mutate(dataset = basename(f), ecotox_group = grp, variant = "known MoA only")
+    }
+  }
+
+  if (length(cama_diag_rows) > 0) {
+    # rho is undefined for all-zero (no-detect) samples -- exclude them.
+    cama_diag_long <- bind_rows(cama_diag_rows) %>% filter(PTI > 0)
+
+    if (nrow(cama_diag_long) > 0) {
+      cama_diag_summary <- cama_diag_long %>%
+        group_by(variant, ecotox_group) %>%
+        summarise(
+          n_samples       = n(),
+          spearman_rho    = suppressWarnings(cor(PTI, E_mix, method = "spearman")),
+          pearson_r       = suppressWarnings(cor(PTI, E_mix, method = "pearson")),
+          max_abs_diff    = max(abs(E_mix - PTI / (1 + PTI))),
+          n_high_group_TU = sum(max_group_TU >= 0.3),
+          .groups = "drop"
+        ) %>%
+        arrange(variant, ecotox_group)
+
+      cama_diag_tbl <- datatable(
+        cama_diag_summary %>%
+          mutate(across(c(spearman_rho, pearson_r, max_abs_diff), ~round(.x, 4))) %>%
+          rename(Variant                              = variant,
+                 `Taxonomic group`                     = ecotox_group,
+                 `N samples`                           = n_samples,
+                 `Spearman rho (E_mix vs PTI)`         = spearman_rho,
+                 `Pearson r`                            = pearson_r,
+                 `Max |E_mix - PTI/(1+PTI)|`           = max_abs_diff,
+                 `N samples with a group TU ≥ 0.3` = n_high_group_TU),
+        rownames = FALSE, options = list(pageLength = 10, dom = "t", scrollX = TRUE),
+        caption = "CAMA E_mix vs standard PTI — pooled across all Data/sample_*.xlsx workbooks"
+      )
+
+      pti_range <- c(0, max(cama_diag_long$PTI, na.rm = TRUE))
+      limit_line <- seq(pti_range[1], pti_range[2], length.out = 100)
+
+      fig9 <- plot_ly(
+        data = cama_diag_long %>% filter(variant == "known MoA only"),
+        x = ~PTI, y = ~E_mix, color = ~ecotox_group, type = "scatter", mode = "markers",
+        text = ~paste0(dataset, " | ", Sample,
+                       "<br>max group TU: ", round(max_group_TU, 3),
+                       "<br>n groups with TU>0: ", n_groups),
+        hoverinfo = "text+x+y"
+      ) %>%
+        add_trace(
+          data = data.frame(x = limit_line, y = limit_line / (1 + limit_line)),
+          x = ~x, y = ~y, inherit = FALSE,
+          type = "scatter", mode = "lines", name = "PTI/(1+PTI) (single-group limit)",
+          line = list(dash = "dash", color = "black"), showlegend = TRUE, hoverinfo = "skip"
+        ) %>%
+        layout(
+          title  = "Plot 9 — CAMA E_mix (known-MoA variant) vs Standard PTI (same subset)",
+          xaxis  = list(title = "Standard PTI (Σ TU, known-MoA compound subset)"),
+          yaxis  = list(title = "CAMA E_mix (known-MoA variant)"),
+          legend = list(title = list(text = "Taxonomic group"))
+        )
+    }
+  }
+}
+
 # ── 9. Build HTML report ──────────────────────────────────────────────────────
 
 css <- "
@@ -730,7 +980,8 @@ report <- tagList(
                else "  |  CompTox gap-fill: NOT RUN",
                if ("moa_group" %in% names(ref))
                  paste0("  |  Mode of Action: YES (",
-                        sum(!is.na(ref$moa_group)), " / ", nrow(ref), " rows assigned)")
+                        sum(ref$moa_group != "unknown", na.rm = TRUE), " / ", nrow(ref),
+                        " rows have a real classification)")
                else "  |  Mode of Action: NOT RUN",
                if (any(bm_check_cols %in% names(ref)))
                  paste0("  |  Benchmarks: YES")
@@ -811,6 +1062,26 @@ report <- tagList(
         as.tags(fig3)
       ),
 
+      # Plot 3b — EC50 vs IC50 (conditional: only after a rebuild with IC50 in the filter)
+      if (!is.null(fig3b)) {
+        make_section(
+          tags$h2("4b. Median EC50 vs Median IC50 (endpoint interchangeability)"),
+          tags$p(class = "note",
+            tags$b("What this shows: "), "for compounds where both EC50 and IC50 data exist in ECOTOX, ",
+            "this plots their separate medians against each other — almost entirely an algae comparison, ",
+            "since IC50 is rarely reported for fish/crustacean. ",
+            tags$b("Why it matters: "), "TaxoTox pools IC50 into the same median as LC50/EC50 (Docs §5.4) ",
+            "on the grounds that ECOTOX's IC50 rows share the same effect/measurement profile as its EC50 ",
+            "rows for algae (population growth rate, biomass, chlorophyll, photosynthesis) — different ",
+            "source studies label the identical growth-inhibition assay differently. ",
+            tags$b("Expected pattern: "), "points near the 1:1 line. ",
+            tags$b("What to look for: "),
+            "systematic divergence would indicate IC50 should be kept separate from EC50 in the ",
+            "aggregation step after all."),
+          as.tags(fig3b)
+        )
+      } else tags$div(),
+
       # Plot 4
       make_section(
         tags$h2("5. Distribution of k = HC5 (SSD) / Median LC50"),
@@ -879,11 +1150,14 @@ report <- tagList(
             "because Kramer et al. couldn't classify them or because they're outside that dataset's ",
             "~3,400-chemical scope — hover a bar segment to see which case applies (",
             tags$code("moa_source"), " column). ",
-            tags$b("Why it matters: "), "for the Concentration Addition with Mode of Action grouping (CAMA) ",
-            "method to produce results that differ from standard Concentration Addition, compounds in the ",
-            "same sample must span multiple real MoA groups. A table dominated by 'unknown' means CAMA's ",
-            "'all compounds' variant will behave similarly to standard TU/PTI for most samples — see the ",
-            "'known MoA' output variant for a view restricted to compounds with an actual classification."),
+            tags$b("Why it matters: "), "two separate effects push the Concentration Addition with Mode of ",
+            "Action grouping (CAMA) method's output toward standard Concentration Addition (PTI). First, ",
+            "a table dominated by 'unknown' means CAMA's 'all compounds' variant has few real groups to ",
+            "partition by — see the 'known MoA' output variant for a view restricted to compounds with an ",
+            "actual classification. Second, and independently of coverage, CAMA's formula mathematically ",
+            "converges toward PTI whenever toxic-unit sums are low (Drescher & Boedeker, 1995) — true for ",
+            "almost every real water sample, even with many real MoA groups present. Plot 9 below measures ",
+            "both effects directly against the repo's own sample data."),
           as.tags(fig7),
           tags$br(),
           if (!is.null(moa_summary_tbl))
@@ -895,11 +1169,35 @@ report <- tagList(
         )
       } else tags$div(),
 
+      # Plot 9 — CAMA vs standard PTI convergence diagnostic (conditional)
+      if (!is.null(fig9)) {
+        make_section(
+          tags$h2("9. CAMA vs Standard PTI — Convergence Diagnostic"),
+          tags$p(class = "note",
+            tags$b("What this shows: "), "computed directly from the repo's own sample monitoring ",
+            "workbooks (", tags$code("Data/sample_*.xlsx"), "), replicating app.R's PTI and CAMA logic: ",
+            "how closely CAMA's mixture effect (", tags$code("E_mix"), ") tracks standard Concentration ",
+            "Addition PTI, and why. ",
+            tags$b("Why it matters: "), "at low toxic-unit levels, CA and IA mathematically converge ",
+            "regardless of MoA grouping (Drescher & Boedeker, 1995) — substituting Step 2 into Step 3 of ",
+            "the CAMA formula (§10.5.2) gives E_mix = 1 − exp(−Σ log(1+group_TU)) ≈ 1 − exp(−PTI) ≈ PTI ",
+            "whenever every group's toxic-unit sum is ≪ 1 — true for almost every real water sample. The ",
+            "dashed line is that single-group limit, PTI/(1+PTI); points hugging it indicate no MoA group ",
+            "reached a toxic-unit sum large enough for the grouping to matter for that sample. ",
+            tags$b("What to look for: "), "points pulling below the dashed line indicate samples where ",
+            "CAMA is genuinely doing more than reproducing PTI — check the table's ",
+            tags$code("N samples with a group TU ≥ 0.3"), " column for how often that regime is reached."),
+          as.tags(fig9),
+          tags$br(),
+          if (!is.null(cama_diag_tbl)) as.tags(cama_diag_tbl) else tags$div()
+        )
+      } else tags$div(),
+
       # Mismatch table
       if (!is.null(dt_mismatch)) {
         make_section(
-          tags$h2(if (!is.null(fig6) || !is.null(fig7))
-                    "9. SSD vs Scaled HC5 — Largest Discrepancies"
+          tags$h2(if (!is.null(fig6) || !is.null(fig7) || !is.null(fig9))
+                    "10. SSD vs Scaled HC5 — Largest Discrepancies"
                   else "6. SSD vs Scaled HC5 — Largest Discrepancies"),
           tags$p(class = "note",
             tags$b("What this shows: "), "the full table of compound\u00d7group rows where both HC5 methods ",

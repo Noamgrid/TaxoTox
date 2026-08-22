@@ -47,7 +47,7 @@ the production server.
 | `ecotox_group` | character | `fish` / `algae` / `crustacean` |
 | `chemical_name` | character | Canonical name from ECOTOX |
 | `n_ecotox` | integer | Number of ECOTOX test results (0 = model-only row) |
-| `median_lc50_ng_L` | numeric | Median of all LC50/EC50 values (ng/L); current TU denominator |
+| `median_lc50_ng_L` | numeric | Median of all LC50/EC50/IC50 values (ng/L); current TU denominator |
 | `hc5_ssd_ng_L` | numeric | HC5 from log-normal SSD fitted to ECOTOX data (n ≥ 5) |
 | `hc5_model_ng_L` | numeric | HC5 from empirical scaling factor (all rows with median LC50) |
 | `hc5_method` | character | `"SSD"` / `"Scaled"` / `"Both"` / `NA` |
@@ -92,8 +92,9 @@ non-interactive runs.
 **Query logic** (`taxotox_install.R`, Steps 1–4):
 
 - Taxa: fish (`ecotox_group LIKE '%fish%'`), algae (`'%algae%'`), crustacean (`'%crustacean%'`)
-- Endpoints: LC50, EC50 (and their log-transformed variants `(log)LC50`, `(log)EC50`;
-  decorated variants `LC50*`, `LC50/` — decorators stripped after back-transformation)
+- Endpoints: LC50, EC50, IC50 (and their log-transformed variants `(log)LC50`,
+  `(log)EC50`; decorated variants `LC50*`, `LC50/`, `IC50/` — decorators stripped after
+  back-transformation). IC50 is pooled alongside EC50 — see Section 5.4.
 - Concentration: `min_concentration` = lowest of up to three reported concentration columns
   (`conc1_mean`, `conc2_mean`, `conc3_mean`); conservative choice for mixture toxicity
 
@@ -245,17 +246,31 @@ that the empirical distribution for a given group warrants a different protectio
 no ECOTOX data, `hc5_model_ng_L = predicted_lc50_ng_L × k`. This assignment is deferred
 until `predicted_lc50_ng_L` is populated.
 
-### 5.4 Combining LC50 and EC50 before computing the median
+### 5.4 Combining LC50, EC50, and IC50 before computing the median
 
-TaxoTox merges LC50 (lethal concentration) and EC50 (effective concentration) results
-before computing `median_lc50_ng_L`. Both endpoint types represent the concentration
-causing a 50% response in an acute toxicity test and are considered interchangeable for
-the TU framework in standard practice (Backhaus & Faust, 2012; ECHA guidance).
+TaxoTox merges LC50 (lethal concentration), EC50 (effective concentration), and IC50
+(inhibitory concentration) results before computing `median_lc50_ng_L`. All three
+endpoint types represent the concentration causing a 50% response in an acute toxicity
+test and are considered interchangeable for the TU framework in standard practice
+(Backhaus & Faust, 2012; ECHA guidance).
+
+IC50 is overwhelmingly an algae-relevant addition: ECOTOX curators label the same
+growth-inhibition assay (population growth rate, biomass, chlorophyll, photosynthesis)
+as either "EC50" or "IC50" depending on the source publication's own terminology, with
+no biological distinction between the two for this taxon — confirmed directly against
+the ECOTOX Knowledgebase, where 234 compounds have **both** an EC50 and an IC50 algae
+result on record. Including IC50 added net-new algae denominator coverage for roughly 59
+compounds (compounds with no prior EC50/LC50 data at all) and additional replicate data
+for ~183 already-covered compounds, out of ~1,800 algae compounds covered beforehand.
+Fish and crustacean gain far less (IC50 terminology is specific to inhibition/growth-type
+assays, rare in lethality-framed fish/crustacean testing), but the filter is one shared
+code path applied uniformly across all three taxa.
 
 This assumption is validated empirically by Plot 3 of `Code/validate_reference.R`,
-which plots median LC50 vs median EC50 per compound × group for all pairs where both
-endpoint types are available. A close 1:1 relationship supports the combined-median
-approach; systematic divergence would indicate the need to separate them.
+which plots median LC50 vs median EC50, and median EC50 vs median IC50, per compound ×
+group for all pairs where both endpoint types are available. A close 1:1 relationship
+supports the combined-median approach; systematic divergence would indicate the need to
+separate them.
 
 ---
 
@@ -549,14 +564,21 @@ reference table gives, per unique compound:
 
 | `moa_source` | Compounds |
 |---|---|
-| `Kramer2024` (real classification) | 1,702 |
-| `unknown_in_Kramer2024` | 594 |
-| `not_in_Kramer2024` | 4,096 |
+| `Kramer2024` (real classification) | 795 |
+| `unknown_in_Kramer2024` | 340 |
+| `not_in_Kramer2024` | 5,887 |
 
-Real MoA coverage (~27% of TaxoTox's ~6,400 unique compounds) is far lower than the old
+*(as of the 2026-07-26 reference table rebuild — regenerate this table from
+`Code/validate_reference.R`'s MoA coverage summary rather than hand-editing it, since the
+compound universe shifts as ECOTOX/Nowell/CompTox gap-fill sources are re-run)*
+
+Real MoA coverage (~11% of TaxoTox's ~7,000 unique compounds) is far lower than the old
 scheme's ~97% narcosis figure — by design. The old figure measured how often the
 classifier assigned *some* label; this one measures how often that label reflects an
-actual curated classification.
+actual curated classification. Coverage has also dropped from an earlier ~27% figure as
+the compound universe grew (Nowell et al. published-value additions, §10.6) faster than
+the Kramer-matched subset — a reminder that this percentage should be re-read from a
+current reference-table rebuild rather than assumed constant.
 
 Key limitations of the current classification:
 
@@ -833,24 +855,69 @@ compounds with an actual curated Mode of Action.
 
 ### 10.5.5 Practical expectation
 
-Given that real MoA classifications currently cover roughly a quarter of TaxoTox's
-compound universe (Section 8.4), most compounds fall into the `unknown` group. This means
-the "all compounds" CAMA variant will often behave similarly to standard CA-based PTI for
-water samples dominated by unclassified compounds — not because those compounds are known
-to act non-specifically (the old narcosis-default assumption), but because CAMA has no
-mechanistic information to partition them further. The "known MoA" variant is the
-more mechanistically meaningful one whenever a sample contains enough classified
-compounds to populate multiple real MoA groups; comparing it against the "all compounds"
-variant and against standard PTI is the recommended way to interpret CAMA output.
+CAMA output tends to track standard CA-based PTI closely (Spearman ρ ≈ 1 in practice —
+see `Code/validate_reference.R` Plot 9) for two independent reasons, not one:
+
+1. **Coverage**: real MoA classifications currently cover only ~11% of TaxoTox's compound
+   universe (Section 8.4), so most compounds fall into the `unknown` group. This means the
+   "all compounds" CAMA variant has few real groups to partition water samples dominated
+   by unclassified compounds into — not because those compounds are known to act
+   non-specifically (the old narcosis-default assumption), but because CAMA has no
+   mechanistic information to partition them further.
+
+2. **Mathematics, independent of coverage**: substituting Step 2 into Step 3 of the CAMA
+   formula above gives the closed form
+   $$E_{mix} = 1 - \exp\!\left(-\sum_g \log(1+group\_TU_g)\right)$$
+   which reduces to $E_{mix} \approx 1 - e^{-PTI} \approx PTI$ whenever every group's toxic
+   unit sum is ≪ 1 — the case for almost every real water sample (this is the general
+   CA/IA convergence-at-low-effect-levels result of Drescher & Boedeker, 1995). This holds
+   **even with rich MoA coverage**: a sample whose compounds span 20+ real MoA groups will
+   still produce $E_{mix} \approx PTI$ if no single group's toxic-unit sum approaches 1.
+   CAMA only visibly diverges from PTI for samples dominated by one or two potent,
+   classified compounds whose own group reaches a toxic-unit sum on the order of 1.
+
+The "known MoA" variant is the more mechanistically meaningful one whenever a sample
+contains enough classified compounds to populate multiple real MoA groups, but per point 2
+above it will *still* look PTI-like unless a group's toxic-unit sum is large — comparing it
+against the "all compounds" variant and against standard PTI, informed by Plot 9's
+per-sample max-group-TU column, is the recommended way to interpret CAMA output.
 
 ### 10.5.6 References
 
+- Junghans, M., Backhaus, T., Faust, M., Scholze, M., & Grimme, L.H. (2006). Application
+  and validation of approaches for the predictive hazard assessment of realistic pesticide
+  mixtures. *Aquatic Toxicology*, 76(2), 93–110. The originating reference for the
+  "two-step prediction" (TSP) procedure CAMA implements: Concentration Addition within
+  groups of similarly-acting chemicals, then Independent Action between groups.
+
 - Drescher, K., & Boedeker, W. (1995). Assessment of the combined effects of substances:
-  the relationship between concentration addition and independent action. *Biometrics*, 51, 716–730.
+  the relationship between concentration addition and independent action. *Biometrics*,
+  51, 716–730. Establishes the general CA/IA relationship used in §10.5.5 above to explain
+  why CAMA converges toward standard PTI at low toxic-unit levels.
 
 - Altenburger, R., et al. (2000). Predictability of the toxicity of multiple chemical
   mixtures to Vibrio fischeri: mixtures composed of similarly acting chemicals.
-  *Environmental Toxicology and Chemistry*, 19(10), 2341–2347.
+  *Environmental Toxicology and Chemistry*, 19(10), 2341–2347. Empirical support
+  specifically for §10.5.1's first premise — that CA is an excellent predictor *within* a
+  group of similarly-acting chemicals — rather than for the grouped CA/IA hybrid procedure
+  itself.
+
+### 10.5.7 Formula validation against literature
+
+`Code/app.R:1602-1610`'s three-step calculation matches the canonical TSP structure
+(Junghans et al., 2006) exactly: within-group CA (`group_TU`), a group-level fractional
+effect, then between-group IA (`E_mix = 1 - ∏(1-E_group)`). One simplification is present
+at the group-effect step: canonical TSP converts each group's toxic-unit sum to a
+fractional effect via that group's own fitted concentration-response curve (a Hill
+function with its own slope), whereas TaxoTox uses the fixed-slope shortcut
+`E_group = group_TU/(1+group_TU)` (Hill slope n = 1) for every group. This is the exact
+same simplification already made — and already cited to Backhaus & Faust (2012) — for the
+standalone IA method in §10.4, applied consistently here rather than introduced anew. It
+is a defensible, data-driven choice: ECOTOX supplies point LC50/EC50 estimates for the
+large majority of compounds, not fitted dose-response curves, so a per-group or
+per-compound slope is not available to fit in the first place. Replacing it would require
+extracting full concentration-response data from ECOTOX (a larger pipeline change, not
+attempted here) rather than a reference-table lookup change.
 
 ---
 
@@ -966,7 +1033,7 @@ Known_CAS supports many-to-one name→CASRN mapping to accommodate synonyms and 
 
 ## 12. Limitations and Caveats
 
-- **Combined LC50/EC50 median**: endpoints are combined on the assumption of
+- **Combined LC50/EC50/IC50 median**: endpoints are combined on the assumption of
   interchangeability for acute aquatic toxicity. This is assessed empirically
   via `validate_reference.R` Plot 3 but not formally tested per compound.
 

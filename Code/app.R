@@ -173,18 +173,10 @@ ui <- fluidPage(
                 checkboxInput("method_cama",      "CAMA",                    value = FALSE),
                 checkboxInput("method_nowell",    "Taxon-Sensitive PTI (Nowell et al. 2014)", value = FALSE),
 
-                # Benchmark sub-selector (A-6) — below all methods, shown only when benchmark is checked
-                # EU EQS / AU ANZG / CA CCME were removed due to low compound coverage
-                # (<3% each in the current reference table) -- US EPA is the only
-                # remaining framework, kept ~10% coverage.
-                conditionalPanel(
-                    condition = "input.method_benchmark == true",
-                    hr(style = "margin:6px 0;"),
-                    tags$p(style = "margin-bottom:4px; font-weight:bold; font-size:13px;",
-                           "Benchmarks:"),
-                    checkboxInput("bm_usepa", "US EPA",  value = TRUE),
-                    hr(style = "margin:6px 0;")
-                ),
+                # Benchmark Hazard Index always uses US EPA (A-6) — EU EQS / AU ANZG /
+                # CA CCME were removed due to low compound coverage (<3% each in the
+                # current reference table), leaving US EPA as the only framework, so
+                # there is no longer a second framework selector to show here.
 
                 # Coverage warning (A-8) — rendered by server when coverage is low
                 uiOutput("advanced_coverage_warning")
@@ -487,9 +479,7 @@ server <- function(input, output, session) {
             if (pct < 80) msgs <- c(msgs, sprintf("HC5: %d%% compound coverage", pct))
         }
         if (input$method_benchmark) {
-            bm_cols <- c(
-                if (input$bm_usepa) "benchmark_usepa_fish_acute_ng_L"  else NULL
-            )
+            bm_cols <- c("benchmark_usepa_fish_acute_ng_L")
             for (col in bm_cols) {
                 if (!col %in% names(ref_matched)) next
                 n_covered <- ref_matched %>% filter(!is.na(.data[[col]])) %>%
@@ -1490,17 +1480,16 @@ server <- function(input, output, session) {
                 bm_results <- list()
 
                 # US EPA — three group-specific sheets using acute columns
-                if (input$bm_usepa) {
-                    usepa_groups <- list(
-                        list(grp = "fish",       col = "benchmark_usepa_fish_acute_ng_L",  label = "Bench. US EPA (Fish)"),
-                        list(grp = "crustacean", col = "benchmark_usepa_crust_acute_ng_L", label = "Bench. US EPA (Crust)"),
-                        list(grp = "algae",      col = "benchmark_usepa_algae_acute_ng_L", label = "Bench. US EPA (Algae)")
-                    )
-                    for (g in usepa_groups) {
-                        if (!g$col %in% names(taxotox_reference)) next
-                        df <- .calc_hi(g$col, g$grp)
-                        if (!is.null(df)) bm_results[[g$label]] <- df
-                    }
+                # (the only benchmark framework left; see A-6 above)
+                usepa_groups <- list(
+                    list(grp = "fish",       col = "benchmark_usepa_fish_acute_ng_L",  label = "Bench. US EPA (Fish)"),
+                    list(grp = "crustacean", col = "benchmark_usepa_crust_acute_ng_L", label = "Bench. US EPA (Crust)"),
+                    list(grp = "algae",      col = "benchmark_usepa_algae_acute_ng_L", label = "Bench. US EPA (Algae)")
+                )
+                for (g in usepa_groups) {
+                    if (!g$col %in% names(taxotox_reference)) next
+                    df <- .calc_hi(g$col, g$grp)
+                    if (!is.null(df)) bm_results[[g$label]] <- df
                 }
 
                 v$benchmark_results <- if (length(bm_results) > 0) bm_results else NULL
@@ -1972,7 +1961,7 @@ server <- function(input, output, session) {
                 writeData(wb, "Bench. No Data", data.frame(
                     Note = paste0(
                         "No benchmark values were found for any of the uploaded compounds. ",
-                        "The selected benchmark framework(s) do not cover the compounds in this dataset. ",
+                        "The US EPA benchmark framework does not cover the compounds in this dataset. ",
                         "Benchmark coverage is typically highest for legacy pesticides and priority substances; ",
                         "emerging contaminants are often not listed."
                     ),
