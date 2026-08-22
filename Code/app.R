@@ -202,9 +202,20 @@ ui <- fluidPage(
         mainPanel(
            tabsetPanel(id = "main_tabs",
 
-               # ── Instructions tab ─────────────────────────────────────────
+               # ── Instructions tab ─────────────────────────────────────────────────────
+               # Kept deliberately short: a glanceable quick-start + risk key
+               # for use while actually running the app, with everything else
+               # (file format detail, CASRN resolution, formulas, Advanced
+               # Assessment methods, screencasts) pointed at the User Guide
+               # instead of duplicated here, so the two don't drift out of
+               # sync the way this tab and Docs/User_Guide.md previously did.
                tabPanel("Instructions",
-                        h3("Workflow"),
+                        h3("Quick Start"),
+                        p("Full walkthrough — input file formats, CASRN resolution, formulas, Advanced ",
+                          "Assessment methods, and step-by-step screencasts — is in the ",
+                          tags$a(href = "https://github.com/Noamgrid/TaxoTox/blob/main/Docs/User_Guide.md",
+                                 target = "_blank", strong("TaxoTox User Guide")),
+                          "."),
                         p("Follow the three steps in the sidebar to analyse your data:"),
                         tags$ol(
                             tags$li(
@@ -221,53 +232,11 @@ ui <- fluidPage(
                             )
                         ),
 
-                        h4("Input File Format"),
-                        p("Accepted formats: CSV, TSV, TXT, XLS, XLSX.",
-                          strong(" All concentrations must be in ng/L."),
-                          " The first column must be either compound names (Layout A) or sample/station identifiers (Layout B)."),
-
-                        h5("Layout A — Pollutant names in first column (default)"),
-                        p("Each row is a compound; each subsequent column is a monitoring station or sample identifier."),
-                        tags$pre(paste(
-                            "Compound    | Station1 | Station2 | ...",
-                            "Caffeine    | 10.5     | 18.2     | ...",
-                            "Atrazine    |  2.1     |  0.5     | ...",
-                            "Bisphenol A |  2.1     |  0.3     | ...",
-                            sep = "\n"
-                        )),
-
-                        h5("Layout B — Station names in first column"),
-                        p("Each row is a monitoring station; compound names are in the header row. The app automatically transposes this matrix to Layout A before processing."),
-                        tags$pre(paste(
-                            "Station  | Caffeine | Atrazine | Bisphenol A | ...",
-                            "Station1 | 10.5     |  2.1     |  2.1        | ...",
-                            "Station2 | 18.2     |  0.5     |  0.3        | ...",
-                            sep = "\n"
-                        )),
-                        p(em("Note: if the app detects that more than 75% of names in the first column are unrecognised, it will offer to transpose the data automatically.")),
-
-                        h4("CASRN Identification"),
-                        p("On upload, compound names are resolved to CAS Registry Numbers (CASRNs) via two sequential layers:"),
-                        tags$ol(
-                            tags$li(
-                                strong("Known_CAS (instant, always on):"),
-                                " a curated internal table of commonly monitored organic micropollutants. Exact-name matches are confirmed automatically with no user action required."
-                            ),
-                            tags$li(
-                                strong("PubChem REST API (optional):"),
-                                " live query of the PubChem compound database via the webchem R package. Enable with the 'Web search' checkbox. Requires an internet connection; no API key needed.",
-                                " Candidate matches are shown in the CASRN Matching tab for review."
-                            )
+                        div(style = "background:#fff3cd; border:1px solid #ffc107; border-radius:4px; padding:8px 12px; margin:14px 0;",
+                            strong("⚠ Units: "), "all uploaded concentrations must be in ", strong("ng/L"),
+                            " (nanograms per litre). The app does not convert units for you — other units will be ",
+                            "silently misread and produce incorrect results."
                         ),
-                        p("Compounds still unresolved after both layers appear in the ",
-                          strong("'Manual CASRN Entry'"), " section of the CASRN Matching tab. Enter the correct CASRN (e.g. 107-13-1) and click 'Add CASRN'. All newly confirmed CASRNs are logged for future integration into Known_CAS."),
-
-                        h4("Toxicity Calculation"),
-                        p("For each compound i, sample j, and taxonomic group g (algae, crustaceans, fish), the Toxic Unit is:"),
-                        tags$pre("TU\u1d62\u2C7C\u1d4D = C\u1d62\u2C7C (ng/L)  /  median\u2080 LC50\u1d62\u1d4D (ng/L)"),
-                        p("where the denominator is the median of all LC50 and EC50 values for compound i and group g in the pre-processed ECOTOX database (", em("final_ecotox_data.fst"), ")."),
-                        p("The Pollution Toxicity Index (PTI) for sample j and group g is the sum of all TUs:"),
-                        tags$pre("PTI\u2C7C\u1d4D = \u03a3\u1d62 TU\u1d62\u2C7C\u1d4D"),
 
                         h4("Risk Interpretation"),
                         tags$table(style = "border-collapse:collapse; margin-bottom:12px;",
@@ -276,11 +245,11 @@ ui <- fluidPage(
                                 tags$th(style = "border:1px solid #ccc; padding:4px 10px; background:#f5f5f5;", "Interpretation")
                             ),
                             tags$tr(
-                                tags$td(style = "border:1px solid #ccc; padding:4px 10px; color:#B71C1C; font-weight:bold;", "\u2265 1.0"),
+                                tags$td(style = "border:1px solid #ccc; padding:4px 10px; color:#B71C1C; font-weight:bold;", "≥ 1.0"),
                                 tags$td(style = "border:1px solid #ccc; padding:4px 10px;", "Acute risk — mixture may cause lethal or immobilisation effects")
                             ),
                             tags$tr(
-                                tags$td(style = "border:1px solid #ccc; padding:4px 10px; color:#E65100; font-weight:bold;", "0.1 \u2013 1.0"),
+                                tags$td(style = "border:1px solid #ccc; padding:4px 10px; color:#E65100; font-weight:bold;", "0.1 – 1.0"),
                                 tags$td(style = "border:1px solid #ccc; padding:4px 10px;", "Chronic risk — sub-lethal effects on sensitive species possible")
                             ),
                             tags$tr(
@@ -288,16 +257,7 @@ ui <- fluidPage(
                                 tags$td(style = "border:1px solid #ccc; padding:4px 10px;", "Low risk — mixture unlikely to cause measurable toxicity")
                             )
                         ),
-                        p(em("PTI values \u2265 0.1 are highlighted orange; \u2265 1.0 are highlighted red in the Toxicity Tables tab.")),
-
-                        h4("Output"),
-                        p("The downloaded Excel workbook contains six sheets:"),
-                        tags$ul(
-                            tags$li(strong("Original data"), " — the uploaded concentration matrix (ng/L)."),
-                            tags$li(strong("Algae / Crustacean / Fish toxicity"), " — per-compound TUs and PTI for each sample."),
-                            tags$li(strong("CASRN Report"), " — matched and unmatched compound list with CASRNs."),
-                            tags$li(strong("Toxicity Coverage"), " — colour-coded matrix showing which taxonomic groups have ECOTOX data for each compound.")
-                        )
+                        p(em("PTI values ≥ 0.1 are highlighted orange; ≥ 1.0 are highlighted red in the Toxicity Tables tab."))
                         ),
                tabPanel("CASRN Matching",
                         uiOutput("duplicate_casrn_warning"),
