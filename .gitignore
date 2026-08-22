@@ -37,3 +37,21 @@ Docs/lib/
 
 # Dev-only QA fixture, not a curated user-facing sample
 Data/sample_coverage_test.csv
+
+# Local Shiny run logs — machine-specific, not shared
+logs/
+
+# Raw screencast recordings — uploaded to YouTube (unlisted) and linked from
+# User_Guide.md instead of committed; keeps the repo small for paper readers.
+Docs/screencasts/
+
+# Reference literature / package documentation PDFs — kept for local
+# reading, not for redistribution via the repo.
+Docs/Backhaus, Faust - 2012 - Predictive environmental risk assessment of chemical mixtures A conceptual framework.pdf
+Docs/ECOTOXr.pdf
+Docs/ECOTOXr_p.pdf
+
+# Ad-hoc analysis scratch outputs — not curated user-facing docs
+Docs/nowell_imbl_fix_comparison.csv
+Docs/nowell_vs_median_ratios.csv
+Docs/TaxoTox_output_template.xlsx

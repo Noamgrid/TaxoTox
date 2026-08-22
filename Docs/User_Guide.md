@@ -5,36 +5,10 @@ pollutant concentrations, it calculates Toxic Units (TU) and the Pollution Toxic
 (PTI) for algae, crustaceans, and fish, using species-sensitivity data from the US EPA
 ECOTOX Knowledgebase.
 
-This guide walks through using the app end to end. For the underlying calculations,
-data sources, and validation, see [`TaxoTox_Technical_Methods.md`](TaxoTox_Technical_Methods.md).
+This guide walks through using the app end to end.
 
-**Live app**: `https://yairsuari.shinyapps.io/TaxoTox/`
+**Live app**: [https://yairsuari.shinyapps.io/TaxoTox/](https://yairsuari.shinyapps.io/TaxoTox/)
 
----
-
-## About the screencasts in this guide
-
-Each stage below has a placeholder block like this:
-
-> 🎥 **Screencast — Section Title**
-> Shows: _what the clip demonstrates_.
-> `[ADD YOUTUBE LINK]`
-
-To fill one in:
-
-1. Record the clip (screen + narration if useful).
-2. Upload it to YouTube as **Unlisted** (not Private — unlisted videos are viewable by
-   anyone with the link, which is what you want for a paper's supplementary material;
-   private videos require the viewer to be signed in and permissioned).
-3. Replace the placeholder line with a clickable thumbnail:
-
-   ```markdown
-   [![Watch: Section Title](https://img.youtube.com/vi/VIDEO_ID/0.jpg)](https://youtu.be/VIDEO_ID)
-   ```
-
-   Swap `VIDEO_ID` for the 11-character ID from the YouTube URL. This keeps the repository
-   small (important — it will be cloned by anyone reading the paper) while still giving
-   readers an inline preview image they can click to play.
 
 ---
 
@@ -52,14 +26,18 @@ The sections below cover each step in detail.
 
 ## Running TaxoTox
 
-Open the hosted app — nothing to install: `https://yairsuari.shinyapps.io/TaxoTox/`
+Open the hosted app — nothing to install: [https://yairsuari.shinyapps.io/TaxoTox/](https://yairsuari.shinyapps.io/TaxoTox/)
 
 ---
 
 ## Preparing Your Input File
 
 **Accepted formats**: CSV, TSV, TXT, XLS, XLSX.
-**All concentrations must be in ng/L.**
+
+> ⚠️ **All concentrations must be in ng/L** (nanograms per litre). The app does not
+> convert units for you — values entered in µg/L, mg/L, ppb, or any other unit will be
+> silently treated as ng/L and produce incorrect Toxic Unit / PTI results. Convert your
+> data to ng/L before uploading.
 
 The app accepts two layouts and auto-detects which one you're using:
 
@@ -90,9 +68,10 @@ In the sidebar, choose the matching **Data layout** radio button, then click
 **"1. Upload Samples Data"**. The app immediately resolves compound names to CAS Registry
 Numbers (CASRNs) and navigates to the **CASRN Matching** tab.
 
-> 🎥 **Screencast — Uploading Your Data**
-> Shows: selecting a data layout, uploading a sample file, and the automatic jump to the
-> CASRN Matching tab.
+> 🎥 **Screencast — Preparing & Uploading Your Data**
+> Shows: formatting an input file (choosing Layout A vs Layout B, confirming concentrations
+> are in ng/L), selecting the matching data layout in the sidebar, uploading the file, and
+> the automatic jump to the CASRN Matching tab.
 > `[ADD YOUTUBE LINK]`
 
 ---
@@ -118,7 +97,8 @@ double-counting that compound, so remove one before proceeding.
 > 🎥 **Screencast — Resolving CASRN Matches**
 > Shows: reviewing PubChem candidates, submitting selected matches, and manually entering
 > a CASRN for an unmatched compound.
-> `[ADD YOUTUBE LINK]`
+
+[![Watch: Resolving CASRN Matches](https://img.youtube.com/vi/Md_Fhz-2pRQ/0.jpg)](https://youtu.be/Md_Fhz-2pRQ)
 
 ---
 
@@ -144,10 +124,55 @@ Compounds with no ECOTOX data but a modelled prediction (CompTox/OPERA) are flag
 a `~` prefix (e.g. `~ibuprofen`) in table headers and Excel exports, denoting extra
 uncertainty in that value.
 
+**Where to find the results:**
+
+- **In the app** — results populate immediately in the **Toxicity Plots** tab (top 10
+  riskiest samples and top 10 most toxic pollutants per taxonomic group, interactive) and
+  the **Toxicity Tables** tab (full per-compound TU/PTI tables, colour-coded by the risk
+  thresholds above). See *Step 4 — Viewing Results* below for details.
+- **In Excel** — clicking **"3. Download Results"** exports the same per-compound TU/PTI
+  values (plus the original data, CASRN report, and toxicity coverage) as a multi-sheet
+  workbook. See *Step 4 — Viewing Results → Download Results* below for the full sheet
+  layout.
+
 > 🎥 **Screencast — Calculating Toxicity**
-> Shows: clicking "2. Calculate Toxicity" and the results populating the Toxicity Plots
-> and Toxicity Tables tabs.
-> `[ADD YOUTUBE LINK]`
+> Shows: clicking "2. Calculate Toxicity", the results populating the Toxicity Plots and
+> Toxicity Tables tabs, and the corresponding output in the downloaded Excel workbook.
+
+[![Watch: Calculating Toxicity](https://img.youtube.com/vi/oRKlXdP2H1E/0.jpg)](https://youtu.be/oRKlXdP2H1E)
+
+---
+
+## Step 4 — Viewing Results
+
+- **Toxicity Plots tab** — top 10 riskiest samples by PTI, and top 10 most toxic pollutants,
+  per taxonomic group. All plots are interactive (hover for details, click legend entries
+  to isolate groups).
+- **Toxicity Tables tab** — full per-compound TU / PTI tables per group, colour-coded by
+  the risk thresholds above (orange ≥ 0.1, red ≥ 1.0).
+
+Read the disclaimer at the top of the Toxicity Plots tab before interpreting results —
+TaxoTox is a research screening tool, not a basis for regulatory decisions on its own.
+
+> 🎥 **Screencast — Viewing Results**
+> Shows: navigating the Toxicity Plots and Toxicity Tables tabs, hovering a plot,
+> filtering a table, then clicking "3. Download Results" and opening the resulting
+> workbook (or zip, if Advanced Assessment was used).
+
+[![Watch: Viewing Results](https://img.youtube.com/vi/KDTR450KU7w/0.jpg)](https://youtu.be/KDTR450KU7w)
+
+### Download Results
+
+Click **"3. Download Results"**. The standard export is a single Excel workbook with six
+sheets:
+
+- **Original data** — the uploaded concentration matrix (ng/L)
+- **Algae / Crustacean / Fish toxicity** — per-compound TU and PTI per sample
+- **CASRN Report** — matched and unmatched compounds with CASRNs
+- **Toxicity Coverage** — which taxonomic groups have ECOTOX data for each compound
+
+If any Advanced Assessment method is enabled, a second workbook (one sheet per method ×
+taxonomic group) is produced and both files are bundled into a single `.zip`.
 
 ---
 
@@ -160,10 +185,11 @@ alongside the standard calculation on the same button press:
   (HC5) instead of the median LC50 as the denominator, a more protective, regulatory-style
   threshold. Produces systematically higher PTI values than the standard method.
 - **Benchmark Hazard Index** — replaces the LC50 denominator with a national regulatory
-  benchmark: **US EPA** (Aquatic Life Benchmarks). Three other frameworks (EU EQS, AU
-  ANZG, CA CCME) were removed because their compound coverage in TaxoTox's reference
-  table was too low to be useful (each under 3%, vs. US EPA's ~9–10%) — see
-  `TaxoTox_Technical_Methods.md` Section 6.3.
+  benchmark: **US EPA Aquatic Life Benchmarks**, the only framework this method offers —
+  checking the box is all that's needed, there's no separate framework to pick. Three
+  other frameworks (EU EQS, AU ANZG, CA CCME) were evaluated and removed because their
+  compound coverage in TaxoTox's reference table was too low to be useful (each under 3%,
+  vs. US EPA's ~9–10%) — see `TaxoTox_Technical_Methods.md` Section 6.3.
 - **Independent Action (IA)** — an alternative to the default Concentration Addition
   model; treats compounds as acting independently rather than additively. More appropriate
   when a mixture is dominated by one or two potent, specifically-acting compounds.
@@ -171,12 +197,17 @@ alongside the standard calculation on the same button press:
   mode of action, then Independent Action across groups. Mode of Action groups come from
   a real, externally curated database (Kramer et al. 2024) rather than a fixed category
   list, and compounds it doesn't classify get an explicit `unknown` group rather than
-  being assumed to act by baseline narcosis. Because real classifications currently cover
-  only a fraction of compounds, CAMA produces **two output variants** per taxonomic
-  group: one including the `unknown`-MoA compounds as their own group, and one
+  being assumed to act by baseline narcosis. Real classifications currently cover only
+  ~11% of TaxoTox's compound universe, so CAMA produces **two output variants** per
+  taxonomic group: one including the `unknown`-MoA compounds as their own group, and one
   ("known MoA") excluding them entirely — compare the two to see how much the
-  unclassified compounds are driving the result. See
-  `TaxoTox_Technical_Methods.md` Section 10.5 for details.
+  unclassified compounds are driving the result. Expect CAMA's `E_mix` to track the
+  standard PTI closely for most samples regardless of coverage — the two mathematically
+  converge whenever every mode-of-action group's toxic-unit sum stays well below 1 (true
+  for the great majority of real water samples); CAMA meaningfully diverges from PTI only
+  when one mode-of-action group is concentrated enough on its own to approach or exceed a
+  toxic-unit sum of 1. See `TaxoTox_Technical_Methods.md` Section 10.5 for details and a
+  worked diagnostic against TaxoTox's own sample datasets.
 - **Taxon-Sensitive PTI (Nowell et al. 2014)** — uses the USGS NAWQA Pesticide Toxicity
   Index (PTI) methodology (Nowell, Norman, Moran, Martin & Stone, 2014, *Sci. Total
   Environ.* 476–477:144–157), the reference method behind the published NWQN/RSQA PTI
@@ -198,47 +229,10 @@ Full formulas, data sources, and validation for each method are in
 `TaxoTox_Technical_Methods.md` (Sections 5, 6, 10, 10.5).
 
 > 🎥 **Screencast — Advanced Assessment**
-> Shows: enabling an advanced method (e.g. Benchmark Hazard Index), selecting a framework,
-> and locating the corresponding sheet in the downloaded workbook.
-> `[ADD YOUTUBE LINK]`
+> Shows: enabling an advanced method (e.g. Benchmark Hazard Index) and locating the
+> corresponding sheet in the downloaded workbook.
 
----
-
-## Viewing Results
-
-- **Toxicity Plots tab** — top 10 riskiest samples by PTI, and top 10 most toxic pollutants,
-  per taxonomic group. All plots are interactive (hover for details, click legend entries
-  to isolate groups).
-- **Toxicity Tables tab** — full per-compound TU / PTI tables per group, colour-coded by
-  the risk thresholds above (orange ≥ 0.1, red ≥ 1.0).
-
-Read the disclaimer at the top of the Toxicity Plots tab before interpreting results —
-TaxoTox is a research screening tool, not a basis for regulatory decisions on its own.
-
-> 🎥 **Screencast — Viewing Results**
-> Shows: navigating the Toxicity Plots and Toxicity Tables tabs, hovering a plot, and
-> filtering a table.
-> `[ADD YOUTUBE LINK]`
-
----
-
-## Step 4 — Download Results
-
-Click **"3. Download Results"**. The standard export is a single Excel workbook with six
-sheets:
-
-- **Original data** — the uploaded concentration matrix (ng/L)
-- **Algae / Crustacean / Fish toxicity** — per-compound TU and PTI per sample
-- **CASRN Report** — matched and unmatched compounds with CASRNs
-- **Toxicity Coverage** — which taxonomic groups have ECOTOX data for each compound
-
-If any Advanced Assessment method is enabled, a second workbook (one sheet per method ×
-taxonomic group) is produced and both files are bundled into a single `.zip`.
-
-> 🎥 **Screencast — Downloading Results**
-> Shows: clicking "3. Download Results" and opening the resulting workbook (or zip, if
-> Advanced Assessment was used).
-> `[ADD YOUTUBE LINK]`
+[![Watch: Advanced Assessment](https://img.youtube.com/vi/9EwMXNivGl0/0.jpg)](https://youtu.be/9EwMXNivGl0)
 
 ---
 
