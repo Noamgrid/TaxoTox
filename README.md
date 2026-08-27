@@ -7,4 +7,4 @@ This guide walks through using the app end to end.
 
 **Live app**: [https://yairsuari.shinyapps.io/TaxoTox/](https://yairsuari.shinyapps.io/TaxoTox/)
 
-See the user guide in ./Docs/User_Guide.md
+**User guide**: [Docs/User_Guide.md](./Docs/User_Guide.md)
