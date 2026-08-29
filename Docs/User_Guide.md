@@ -183,7 +183,18 @@ alongside the standard calculation on the same button press:
 
 - **HC5-based TU/PTI** — uses the 5th-percentile Species Sensitivity Distribution
   (HC5) instead of the median LC50 as the denominator, a more protective, regulatory-style
-  threshold. Produces systematically higher PTI values than the standard method.
+  threshold. Produces systematically higher PTI values than the standard method. The HC5
+  worksheet also includes an **`msPAF_EC50`** column next to `PTI` — the multi-substance
+  Potentially Affected Fraction (de Zwart & Posthuma, 2005), the probability that a
+  randomly drawn species from that taxon's community is at or above its own EC50, read
+  directly off the underlying Species Sensitivity Distribution rather than just whether
+  the toxic-unit sum crosses 1. It's built from the same acute LC50/EC50/IC50 SSD fits as
+  HC5 itself — a second way of reading the same computation, not a separate method — so it
+  shares HC5's coverage and caveats. It is **not** the same metric as the chronic
+  "msPAF-NOEC" reported elsewhere in the ecotoxicology literature (a different,
+  chronic-endpoint SSD with its own ~5%-protective calibration convention); do not compare
+  the two directly. See `TaxoTox_Technical_Methods.md` Section 5.5 for the formula and
+  derivation.
 - **Benchmark Hazard Index** — replaces the LC50 denominator with a national regulatory
   benchmark: **US EPA Aquatic Life Benchmarks**, the only framework this method offers —
   checking the box is all that's needed, there's no separate framework to pick. Three
@@ -226,7 +237,7 @@ alongside the standard calculation on the same button press:
   `TaxoTox_Technical_Methods.md` Section 10.6 for the full algorithm.
 
 Full formulas, data sources, and validation for each method are in
-`TaxoTox_Technical_Methods.md` (Sections 5, 6, 10, 10.5).
+`TaxoTox_Technical_Methods.md` (Sections 5, 5.5, 6, 10, 10.5).
 
 > 🎥 **Screencast — Advanced Assessment**
 > Shows: enabling an advanced method (e.g. Benchmark Hazard Index) and locating the

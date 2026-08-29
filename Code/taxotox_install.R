@@ -197,7 +197,7 @@ if (interactive()) {
     library(googlesheets4)
     key_path <- "taxotox-service.json"
     if (file.exists(key_path)) gs4_auth(path = key_path) else gs4_auth()
-    nrow(read_sheet(.curation_sheet_id, col_types = "cc"))
+    nrow(read_sheet(.curation_sheet_id, col_types = "ccc"))
   }, error = function(e) {
     message("Could not check the curation Google Sheet: ", conditionMessage(e))
     NA_integer_
@@ -516,19 +516,54 @@ if (.ask_run("S7b_ssd", "SSD fitting for all compound\u00d7group pairs with n \u
 # Both columns are kept separate so the Excel output can report which method
 # was used for each compound (see plan items A-13, A-14, A-16).
 
-fit_hc5_ssd <- function(values) {
-  # values: numeric vector of conc_ng_L for one compound × group pair
-  # Returns HC5 in ng/L, or NA_real_ if fitting fails or n < 5.
-  # Warnings (e.g. optimiser non-convergence) are suppressed — they are
+fit_hc5_ssd_full <- function(values) {
+  # values: numeric vector of conc_ng_L for one compound x group pair
+  # Returns a 1-row tibble: hc5_ssd_ng_L (ng/L), sigma_ssd_lnorm (audit only),
+  # and sigma_ssd_log10 (the one actually consumed downstream). All NA_real_
+  # if fitting fails or n < 5.
+  #
+  # UNITS WARNING: ssdtools' ssd_fit_dists(dists="lnorm") reports `sdlog` in
+  # the same convention as base R's plnorm/qlnorm -- a NATURAL-log SD (i.e.
+  # log(X) ~ N(meanlog, sdlog), confirmed empirically against a known-sigma
+  # simulation: fitted sdlog matches log10_sigma * log(10), not log10_sigma
+  # itself). sigma_group_fallback (step 7c, below) is a log10 SD by
+  # construction (it inverts a log10 relationship). msPAF_EC50's formula
+  # (app.R's .calc_hc5(), Docs/TaxoTox_Technical_Methods.md Section 5.5) is
+  # pnorm(log10(S)/sigma_mix) -- a log10-based formula -- so sigma_ec50 (the
+  # coalesce of these two in step 7c) MUST be log10 throughout. Converting
+  # here, once, at the source, rather than trusting every downstream
+  # consumer to remember the conversion.
+  #
+  # sigma_ssd_log10 is sigma_i in the multi-substance Potentially Affected
+  # Fraction (msPAF_EC50) formula (de Zwart & Posthuma, 2005, Environ.
+  # Toxicol. Chem. 24(11):2665-2679, Eq. 4-5) -- extracted from this exact
+  # SSD fit (not re-fitted separately) so it stays consistent with
+  # hc5_ssd_ng_L above. See Docs/TaxoTox_Technical_Methods.md Section 5.5.
+  # Warnings (e.g. optimiser non-convergence) are suppressed -- they are
   # expected for extreme data distributions and handled by returning NA.
+  .na_result <- tibble(hc5_ssd_ng_L = NA_real_, sigma_ssd_lnorm = NA_real_,
+                       sigma_ssd_log10 = NA_real_)
   withCallingHandlers(
     tryCatch({
       df <- data.frame(Conc = values[values > 0 & is.finite(values)])
-      if (nrow(df) < 5) return(NA_real_)
+      if (nrow(df) < 5) {
+        return(.na_result)
+      }
       fit <- ssd_fit_dists(df, dists = "lnorm")
       hc  <- ssd_hc(fit, proportion = 0.05, ci = FALSE)
-      as.numeric(hc$est[[1]])
-    }, error = function(e) NA_real_),
+
+      # coef(fit) returns a tibble (dist, term, est, se); for a single
+      # "lnorm" fit this has two rows, term %in% c("meanlog", "sdlog").
+      co        <- coef(fit)
+      sdlog_val <- co$est[co$dist == "lnorm" & co$term == "sdlog"]
+      sdlog_val <- if (length(sdlog_val) == 1) sdlog_val else NA_real_
+
+      tibble(
+        hc5_ssd_ng_L    = as.numeric(hc$est[[1]]),
+        sigma_ssd_lnorm = sdlog_val,                    # natural-log, audit trail only
+        sigma_ssd_log10 = sdlog_val / log(10)            # log10 -- what sigma_ec50 needs
+      )
+    }, error = function(e) .na_result),
     warning = function(w) invokeRestart("muffleWarning")
   )
 }
@@ -545,10 +580,8 @@ message(sprintf("Step 7b: fitting SSD for %d compound\u00d7group pairs (n \u2265
 
 hc5_ssd <- eligible %>%
   group_by(cas_number, ecotox_group) %>%
-  summarise(
-    hc5_ssd_ng_L = fit_hc5_ssd(conc_ng_L),
-    .groups = "drop"
-  )
+  group_modify(~ fit_hc5_ssd_full(.x$conc_ng_L)) %>%
+  ungroup()
 
 # Join HC5 onto reference; initialise model column and method flag
 reference <- reference %>%
@@ -569,10 +602,10 @@ message(sprintf(
 .mark_done("S7b_ssd")
 
 } else {
-  message("S7b_ssd skipped — loading hc5_ssd_ng_L from existing taxotox_reference.fst...")
+  message("S7b_ssd skipped -- loading hc5_ssd_ng_L / sigma_ssd_log10 from existing taxotox_reference.fst...")
   if (file.exists("../Data/taxotox_reference.fst")) {
     prev <- read.fst("../Data/taxotox_reference.fst", as.data.table = FALSE) %>%
-      select(cas_number, ecotox_group, any_of("hc5_ssd_ng_L")) %>%
+      select(cas_number, ecotox_group, any_of(c("hc5_ssd_ng_L", "sigma_ssd_lnorm", "sigma_ssd_log10"))) %>%
       mutate(cas_number = as.character(cas_number))
     reference <- reference %>%
       mutate(cas_number = as.character(cas_number)) %>%
@@ -581,11 +614,25 @@ message(sprintf(
         hc5_model_ng_L = NA_real_,
         hc5_method     = case_when(!is.na(hc5_ssd_ng_L) ~ "SSD", TRUE ~ NA_character_)
       )
-    message(sprintf("  Loaded hc5_ssd_ng_L for %d rows.", sum(!is.na(reference$hc5_ssd_ng_L))))
+    # sigma_ssd_lnorm (natural-log sdlog, audit only) was added to
+    # taxotox_reference.fst's schema alongside this change; sigma_ssd_log10
+    # (what step 7c's coalesce() actually needs -- msPAF_EC50 is a log10
+    # formula) was added later still. any_of() above silently omits whichever
+    # column a pre-existing file predates, so backfill both: derive
+    # sigma_ssd_log10 from sigma_ssd_lnorm / log(10) if a file has the old
+    # natural-log-only column but not yet the log10 one.
+    if (!"sigma_ssd_lnorm" %in% names(reference)) reference$sigma_ssd_lnorm <- NA_real_
+    if (!"sigma_ssd_log10" %in% names(reference)) {
+      reference$sigma_ssd_log10 <- reference$sigma_ssd_lnorm / log(10)
+    }
+    message(sprintf("  Loaded hc5_ssd_ng_L for %d rows (sigma_ssd_log10 for %d).",
+                    sum(!is.na(reference$hc5_ssd_ng_L)),
+                    sum(!is.na(reference$sigma_ssd_log10))))
   } else {
     warning("No existing taxotox_reference.fst found — hc5_ssd_ng_L will be NA. Run S7b_ssd at least once.")
     reference <- reference %>%
-      mutate(hc5_ssd_ng_L = NA_real_, hc5_model_ng_L = NA_real_, hc5_method = NA_character_)
+      mutate(hc5_ssd_ng_L = NA_real_, sigma_ssd_lnorm = NA_real_, sigma_ssd_log10 = NA_real_,
+             hc5_model_ng_L = NA_real_, hc5_method = NA_character_)
   }
 }
 
@@ -621,13 +668,30 @@ scaling_factors <- reference %>%
     scaling_factor = median(ratio, na.rm = TRUE),
     n_calibration  = n(),
     .groups = "drop"
+  ) %>%
+  mutate(
+    # Group-level fallback sigma for msPAF_EC50 (de Zwart & Posthuma, 2005,
+    # Environ. Toxicol. Chem. 24(11):2665-2679, Eq. 4), used for the ~80% of
+    # compound x group rows with no direct SSD fit (sigma_ssd_lnorm NA).
+    # Inverts the log-normal SSD relationship already used above for
+    # hc5_model_ng_L:
+    #   HC5 = median_LC50 * 10^(qnorm(0.05) * sigma)
+    #       = median_LC50 * scaling_factor   [scaling_factor == k, this group]
+    # so   sigma_group_fallback = log10(scaling_factor) / qnorm(0.05)
+    # qnorm(0.05) is used directly (not a hardcoded -1.6449) so this stays
+    # tied to the proportion = 0.05 passed to ssd_hc() in step 7b above --
+    # if that changes, this does too. See Posthuma & de Zwart (2012),
+    # Environ. Toxicol. Chem. 31(10):2175-2181, for the fitted-over-fallback
+    # priority used when this is joined back onto `reference` below.
+    sigma_group_fallback = log10(scaling_factor) / qnorm(0.05)
   )
 
 message("Step 7c: HC5/median scaling factors per taxonomic group:")
 for (i in seq_len(nrow(scaling_factors))) {
-  message(sprintf("  %-12s  k = %.4f  (calibrated from %d compounds)",
+  message(sprintf("  %-12s  k = %.4f  sigma_fallback = %.4f  (calibrated from %d compounds)",
                   scaling_factors$ecotox_group[i],
                   scaling_factors$scaling_factor[i],
+                  scaling_factors$sigma_group_fallback[i],
                   scaling_factors$n_calibration[i]))
 }
 
@@ -646,9 +710,23 @@ reference <- reference %>%
       !is.na(hc5_ssd_ng_L)                            ~ "SSD",
       !is.na(hc5_model_ng_L)                          ~ "Scaled",
       TRUE                                             ~ NA_character_
-    )
+    ),
+    # sigma_ec50: the sigma actually consumed by app.R's msPAF_EC50
+    # calculation (de Zwart & Posthuma, 2005, Eq. 4-6). Prefers this
+    # compound's own fitted SSD sdlog when available, otherwise falls back
+    # to this taxonomic group's calibrated sigma -- the same priority order
+    # already used for hc5_denom = coalesce(hc5_ssd_ng_L, hc5_model_ng_L),
+    # so any row with a usable HC5 denominator also has a usable sigma.
+    # MUST use sigma_ssd_log10, not sigma_ssd_lnorm: sigma_group_fallback is
+    # a log10 SD (log10(k)/qnorm(0.05)) and app.R's msPAF_EC50 formula
+    # (pnorm(log10(S)/sigma_mix)) is log10-based throughout, but
+    # sigma_ssd_lnorm is ssdtools' natural-log sdlog -- coalescing that
+    # straight in here mixed two log bases (a factor of log(10) ~ 2.303) and
+    # badly overestimated msPAF_EC50 for every SSD-fitted compound. See
+    # fit_hc5_ssd_full() above for the empirical confirmation.
+    sigma_ec50 = dplyr::coalesce(sigma_ssd_log10, sigma_group_fallback)
   ) %>%
-  select(-scaling_factor, -n_calibration)
+  select(-scaling_factor, -n_calibration, -sigma_group_fallback)
 
 message(sprintf(
   "Step 7c complete: hc5_model_ng_L populated for %d rows (%d SSD+Scaled, %d Scaled-only, %d SSD-only).",
@@ -1025,6 +1103,8 @@ if (!nzchar(COMPTOX_KEY)) {
       n_ecotox         = 0L,
       median_lc50_ng_L = NA_real_,
       hc5_ssd_ng_L     = NA_real_,
+      sigma_ssd_lnorm  = NA_real_,   # no SSD fit possible with 0 ECOTOX points
+      sigma_ssd_log10  = NA_real_,   # no SSD fit possible with 0 ECOTOX points
       hc5_model_ng_L   = NA_real_,
       hc5_method       = NA_character_
     ) %>%
@@ -1035,9 +1115,13 @@ if (!nzchar(COMPTOX_KEY)) {
         predicted_lc50_ng_L * scaling_factor,
         NA_real_
       ),
-      hc5_method = if_else(!is.na(hc5_model_ng_L), "Scaled", NA_character_)
+      hc5_method = if_else(!is.na(hc5_model_ng_L), "Scaled", NA_character_),
+      # sigma_ssd_log10 is NA for all n_ecotox = 0 rows, so this coalesces
+      # straight to the group fallback (de Zwart & Posthuma, 2005) -- see
+      # the sigma_ec50 comment at step 7c above.
+      sigma_ec50 = dplyr::coalesce(sigma_ssd_log10, sigma_group_fallback)
     ) %>%
-    select(-any_of(c("scaling_factor", "n_calibration")))
+    select(-any_of(c("scaling_factor", "n_calibration", "sigma_group_fallback")))
 
   reference <- bind_rows(reference, new_rows)
 
@@ -1136,6 +1220,17 @@ if (.ask_run("S_i4_finalise",
     "n_ecotox", "median_lc50_ng_L",
     # HC5
     "hc5_ssd_ng_L", "hc5_model_ng_L", "hc5_method",
+    # msPAF_EC50 (de Zwart & Posthuma, 2005, Environ. Toxicol. Chem.
+    # 24(11):2665-2679). sigma_ssd_lnorm: SSD-fit sdlog in ssdtools' native
+    # NATURAL-log units, retained for audit alongside hc5_ssd_ng_L only --
+    # NOT consumed downstream. sigma_ssd_log10: the same value converted to
+    # log10 (/ log(10)), which is what sigma_ec50 actually needs, since
+    # sigma_group_fallback and app.R's msPAF_EC50 formula are both log10-based.
+    # sigma_ec50: coalesce(sigma_ssd_log10, group-level fallback) -- the value
+    # app.R actually consumes for the msPAF_EC50 calculation. NOT the same
+    # metric as msPAF-NOEC (chronic SSDs; Posthuma et al., 2019, ETC
+    # 38(4):905-917) -- see Docs/TaxoTox_Technical_Methods.md Section 5.5.
+    "sigma_ssd_lnorm", "sigma_ssd_log10", "sigma_ec50",
     # CompTox gap-fill
     "predicted_lc50_ng_L", "lc50_source",
     # Mode of Action

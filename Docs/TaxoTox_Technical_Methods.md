@@ -272,6 +272,121 @@ group for all pairs where both endpoint types are available. A close 1:1 relatio
 supports the combined-median approach; systematic divergence would indicate the need to
 separate them.
 
+### 5.5 msPAF_EC50 (Multi-substance Potentially Affected Fraction)
+
+**Background.** HC5-based PTI (§5.1) reports whether the summed toxic-unit load crosses
+the 5th-percentile threshold, but treats every mixture the same way once that threshold
+is crossed — it does not distinguish a mixture that just barely exceeds HC5 from one that
+massively does, in terms of the underlying species-sensitivity distribution. msPAF
+(multi-substance Potentially Affected Fraction; de Zwart & Posthuma, 2005, *Environmental
+Toxicology and Chemistry*, 24(11), 2665–2679) reframes the same toxic-unit sum as a
+probability: the fraction of species in a taxon's community predicted to be at or above
+their own EC50, given the log-normal spread (σ) of the community's Species Sensitivity
+Distribution — not merely whether the sum crosses 1.
+
+**Formula.**
+
+$$TU_i = \frac{C_i}{EC50_i}$$
+
+$$S = \sum_i TU_i$$
+
+$$\sigma_{mix} = \sum_i \left(\frac{TU_i}{S}\right)\sigma_i$$
+
+$$msPAF_{EC50} = \Phi\!\left(\frac{\log_{10}(S)}{\sigma_{mix}}\right)$$
+
+where $\Phi$ is the standard normal CDF, $EC50_i$ is the **same** median LC50/EC50/IC50
+denominator already used for the standard CA-PTI (§4) — **not** the HC5 value — and
+$\sigma_{mix}$ is a **toxic-unit-contribution-weighted** average of each compound's own
+SSD spread (de Zwart & Posthuma, 2005, Eq. 4–5; Posthuma & de Zwart, 2012, *Environmental
+Toxicology and Chemistry*, 31(10), 2175–2181), not a plain unweighted mean — a compound
+contributing a large share of the mixture's toxic units should dominate the mixture's
+effective spread more than a compound present in trace amounts, even if the latter has a
+steeper individual SSD.
+
+**Consistency check.** For a single compound (or a mixture where every contributing
+compound shares the same $\sigma$ — e.g. all fall back to the group-level $k$ of §5.3,
+with no directly SSD-fitted compound in the mix), setting $S$ at the point where the
+mixture's HC5-based PTI equals exactly 1 gives $msPAF_{EC50} = \Phi(\text{qnorm}(0.05)) =
+0.05$ exactly, by construction — consistent with HC5's own definition as the 5th-percentile
+threshold. For a heterogeneous multi-compound mixture (compounds with genuinely different
+$\sigma_i$ contributing comparable toxic-unit shares), this equality holds only
+approximately, not exactly, because $\sigma_{mix}$'s linear weighting of $\sigma_i$ is not
+algebraically equivalent to how heterogeneous per-compound HC5 ratios combine in the
+HC5-based PTI sum.
+
+**σ derivation.** `sigma_ec50 = coalesce(sigma_ssd_log10, sigma_group_fallback)`:
+
+| Column | Source | Coverage |
+|---|---|---|
+| `sigma_ssd_lnorm` (audit only, **not** consumed downstream) | `sdlog` term of the fitted log-normal SSD (same fit as `hc5_ssd_ng_L`), in `ssdtools`' native **natural-log** convention (`log(X) ~ N(meanlog, sdlog)`, same as base R's `plnorm`/`qlnorm`) | n_ecotox ≥ 5 (~15–20% of rows) |
+| `sigma_ssd_log10` | `sigma_ssd_lnorm / log(10)` — converts to the **log10** SD that this formula's $\sigma_{mix}$ actually requires | Same rows as `sigma_ssd_lnorm` |
+| `sigma_group_fallback` (not persisted; folded into `sigma_ec50`) | $\log_{10}(k)/\text{qnorm}(0.05)$, inverting the §5.3 group-level scaling factor $k$ | All rows with any LC50 value |
+
+**Unit note.** `ssdtools::ssd_fit_dists(dists = "lnorm")` reports `sdlog` in natural-log
+units, not log10 — confirmed empirically by fitting against a simulated dataset with a
+known log10 spread and comparing the recovered `sdlog` to both candidate units. An earlier
+version of this pipeline coalesced `sigma_ssd_lnorm` directly into `sigma_ec50`, mixing log
+bases with the log10-based `sigma_group_fallback` and `msPAF_EC50` formula above (a factor
+of $\ln(10) \approx 2.303$). Because the formula inflates $\sigma_{mix}$, the effect was a
+large overestimate of `msPAF_EC50` specifically for SSD-fitted compounds at low-to-moderate
+exposure (e.g. a sample at 1% of a taxon's CA-PTI HC5 read as ~17% affected instead of ~1%).
+Fixed by converting at the source in `taxotox_install.R`'s `fit_hc5_ssd_full()`; see
+`Code/tests/test_mspaf_identity.R`'s Case 5 for a regression test built from an actual
+`qlnorm`-derived HC5 rather than the log10 formula the other test cases assume.
+
+**Important distinction — msPAF_EC50 vs. msPAF-NOEC.** TaxoTox's `msPAF_EC50` is built
+from **acute** LC50/EC50/IC50 SSDs, matching TaxoTox's existing HC5 and standard-PTI
+denominators. It is a related but **distinct** metric from "msPAF-NOEC" as used elsewhere
+in the ecotoxicology literature (Posthuma et al., 2019, *Environmental Toxicology and
+Chemistry*, 38(4), 905–917; Oginah et al., 2025, *Global Change Biology*, 31(1), e70305),
+which is built from **chronic** NOEC/EC10 SSDs and carries its own, differently-calibrated
+protective thresholds. Do not compare `msPAF_EC50` values against msPAF-NOEC's
+conventional ~5%-protective benchmark, or against thresholds reported for msPAF-NOEC in
+the wider literature — the two are computed from different toxicological endpoints and
+are not interchangeable.
+
+**Limitations.** Inherits every limitation of §5.2/§5.3 (HC5 methods), since `sigma_ec50`
+is derived from the exact same SSD fits and group-level scaling factor. Additionally: the
+contribution-weighted $\sigma_{mix}$ assumes each compound's SSD shape is well-approximated
+by its own fitted or group-fallback $\sigma$ in the presence of other co-occurring
+compounds — no interaction between compounds' SSDs is modelled beyond simple Concentration
+Addition on $S$. `msPAF_EC50`, like the rest of the HC5-based PTI table it's computed
+alongside, is currently surfaced only in the Advanced Assessment Excel export
+(`Code/app.R`'s `.calc_hc5()` output) — there is no Shiny UI table or plot equivalent. This
+is a deliberate, existing scope boundary shared by the whole HC5 table, not something new
+introduced by `msPAF_EC50`. Also note that every SSD referenced in this section (and in
+§5.2/§5.3) is
+fit **within one taxonomic group** (algae, crustaceans, or fish separately) — the resulting
+HC5 is a "5th percentile within that taxon," not the cross-community HC5 of the standard
+regulatory literature (which pools species across all taxa in one SSD). This is expected
+and appropriate for TaxoTox's taxon-separated design, but manuscript text and comparisons
+to EQS/PNEC-style cross-community benchmarks should say so explicitly.
+
+### 5.6 References
+
+- de Zwart, D., & Posthuma, L. (2005). Complex mixture toxicity for single and multiple
+  species: proposed methodologies. *Environmental Toxicology and Chemistry*, 24(11),
+  2665–2679. Originating reference for the msPAF formula implemented here (Eq. 4–6): the
+  contribution-weighted $\sigma_{mix}$ and the $\Phi(\log_{10}(S)/\sigma_{mix})$
+  probability transform.
+- Posthuma, L., & de Zwart, D. (2012). Predicted mixture toxicity to species in field
+  assemblages, and the ecotoxicological risk assessment of chemicals. *Environmental
+  Toxicology and Chemistry*, 31(10), 2175–2181. Supporting reference for the
+  contribution-weighted averaging of per-compound SSD spread in a mixture context.
+- Posthuma, L., Zijp, M.C., De Zwart, D., Van de Meent, D., Globevnik, L., Koprivsek, M.,
+  Focks, A., van Gils, J., & Birk, S. (2019). Chemical pollution imposes limitations to
+  the ecological status of European surface waters. *Scientific Reports*, 10(1), 14825.
+  Also: Posthuma, L., Altenburger, R., Backhaus, T., Kortenkamp, A., Müller, C., Focks,
+  A., de Zwart, D., & Brack, W. (2019). Improved component-based methods for mixture risk
+  assessment are key to characterise complex chemical pollution in surface waters.
+  *Environmental Sciences Europe*, 31(1), 1–11. Establishes the chronic msPAF-NOEC
+  convention that `msPAF_EC50` is explicitly distinguished from above.
+- Oginah, S.A., Posthuma, L., Slootweg, J., Hauschild, M., & Fantke, P. (2025).
+  Calibrating Predicted Mixture Toxic Pressure to Observed Biodiversity Loss in Aquatic
+  Ecosystems. *Global Change Biology*, 31(6), e70305. Recent large-scale calibration of
+  the chronic msPAF-NOEC/EC10 convention against observed biodiversity loss, cited for the
+  same distinction as above.
+
 ---
 
 ## 6. Benchmark Hazard Index

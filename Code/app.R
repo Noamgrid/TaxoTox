@@ -344,7 +344,7 @@ server <- function(input, output, session) {
         ia_results           = NULL,     # named list: IA effect-fraction tables per group
         cama_results         = NULL,     # data.frame: CAMA E_mix per sample
         plots                = NULL,     # named list of ggplot objects
-        manual_additions     = data.table(PREFERRED_NAME = character(), CASRN = character()),
+        manual_additions     = data.table(PREFERRED_NAME = character(), CASRN = character(), source = character()),
         pending_unfound      = NULL       # saved when orientation-check modal is shown
     )
 
@@ -357,6 +357,18 @@ server <- function(input, output, session) {
     Known_CAS          <- read.fst(file.path(.data_dir, "Known_CAS.fst"),         as.data.table = TRUE)
     taxotox_reference  <- read.fst(file.path(.data_dir, "taxotox_reference.fst"), as.data.table = FALSE) %>%
         mutate(cas_number = as.character(cas_number))
+
+    # msPAF_EC50 (de Zwart & Posthuma, 2005, Environ. Toxicol. Chem.
+    # 24(11):2665-2679; see Docs/TaxoTox_Technical_Methods.md Section 5.5)
+    # needs sigma_ec50, added to taxotox_reference.fst's schema by
+    # Code/taxotox_install.R steps 7b/7c. If the deployed .fst predates that
+    # change, degrade gracefully (msPAF_EC50 = NA) instead of crashing the
+    # HC5 tab.
+    if (!"sigma_ec50" %in% names(taxotox_reference)) {
+        taxotox_reference$sigma_ec50 <- NA_real_
+        message("taxotox_reference.fst has no sigma_ec50 column (pre-msPAF_EC50 build) -- ",
+                "msPAF_EC50 will be NA until Code/taxotox_install.R is re-run.")
+    }
 
     # ── Reference Data download handlers ──────────────────────────────────────
     # Let users download the same reference tables the app uses internally,
@@ -507,6 +519,24 @@ server <- function(input, output, session) {
         return(as.data.table(df))
     }
 
+    # ── .canon_casrn ─────────────────────────────────────────────────────────
+    # Normalises a CASRN to the standard dashed form (e.g. "52645531" or
+    # "52645-53-1" -> "52645-53-1") regardless of how it was typed/pasted.
+    # CAS Registry Numbers always split into (leading digits)-(2 digits)-(1
+    # check digit) counting from the right, so this is purely mechanical.
+    # Keeping CASRN dashed matters beyond cosmetics: the CompTox API's DTXSID
+    # search only reliably resolves dashed CASRNs (~99% dashed vs. ~22%
+    # dash-free, confirmed against Data/dtxsid_map.csv), so any dash-free
+    # CASRN entering Known_CAS.fst quietly loses CompTox gap-fill coverage.
+    .canon_casrn <- function(x) {
+        d <- gsub("[^0-9]", "", trimws(x))
+        vapply(d, function(di) {
+            if (nchar(di) < 4) return(di)
+            n <- nchar(di)
+            paste0(substr(di, 1, n - 3), "-", substr(di, n - 2, n - 1), "-", substr(di, n, n))
+        }, character(1), USE.NAMES = FALSE)
+    }
+
     # ── .gs4_auth_auto ────────────────────────────────────────────────────────
     # Authenticates with Google Sheets using the service account JSON bundled
     # alongside app.R (gitignored, uploaded to shinyapps.io with the app).
@@ -579,18 +609,34 @@ server <- function(input, output, session) {
     log_event("INFO", "session_start", "New session", session_id = .session_id)
 
     # ── append_to_temp_cas ────────────────────────────────────────────────────
-    # Appends newly confirmed PREFERRED_NAME / CASRN pairs to the curation
-    # Google Sheet, so data persists across shinyapps.io server restarts and
-    # curation always has one authoritative source. Curation is Sheets-only
-    # now (no local temp_CAS.fst fallback) -- TAXOTOX_SHEET_ID has a real
-    # default (see top of file), so a genuinely empty sheet_id only happens
-    # if that default is deliberately overridden to "".
+    # Appends newly confirmed PREFERRED_NAME / CASRN / source rows to the
+    # curation Google Sheet, so data persists across shinyapps.io server
+    # restarts and curation always has one authoritative source. Curation is
+    # Sheets-only now (no local temp_CAS.fst fallback) -- TAXOTOX_SHEET_ID has
+    # a real default (see top of file), so a genuinely empty sheet_id only
+    # happens if that default is deliberately overridden to "".
+    #
+    # CASRN is kept in its standard dashed form (NOT stripped) -- the CompTox
+    # API's DTXSID search only reliably resolves dashed CASRNs (empirically:
+    # ~99% resolution dashed vs. ~22% dash-free), so writing dash-free here
+    # would silently sabotage taxotox_install.R's CompTox gap-fill for every
+    # compound curated through this path.
+    #
+    # `source` records how each row was obtained ("Manual" or "API") so
+    # taxotox_curate.R can show reviewers where a candidate came from.
+    #
+    # Before appending, filters out rows whose normalized (dash/case
+    # insensitive) PREFERRED_NAME or CASRN already exists in Known_CAS.fst or
+    # in the sheet's current pending rows -- previously every call appended
+    # unconditionally, which is why the pending sheet accumulated hundreds of
+    # duplicate entries for the same handful of compounds.
     append_to_temp_cas <- function(new_data) {
         if (!all(c("PREFERRED_NAME", "CASRN") %in% names(new_data)))
             stop("New data must contain PREFERRED_NAME and CASRN columns.")
+        if (!"source" %in% names(new_data)) new_data$source <- NA_character_
         new_data <- new_data %>%
-            mutate(CASRN = gsub("-", "", trimws(CASRN))) %>%
-            select(PREFERRED_NAME, CASRN)
+            mutate(CASRN = .canon_casrn(CASRN)) %>%
+            select(PREFERRED_NAME, CASRN, source)
 
         sheet_id <- Sys.getenv("TAXOTOX_SHEET_ID", unset = TAXOTOX_SHEET_ID)
 
@@ -599,9 +645,26 @@ server <- function(input, output, session) {
             return(invisible(NULL))
         }
 
+        .norm_cas  <- function(x) gsub("[^0-9]", "", x)
+        .norm_name <- function(x) tolower(trimws(x))
+
         tryCatch({
             library(googlesheets4)
             .gs4_auth_auto()
+
+            existing <- tryCatch(
+                googlesheets4::read_sheet(sheet_id, col_types = "ccc") %>% as.data.frame(),
+                error = function(e) data.frame(PREFERRED_NAME = character(), CASRN = character())
+            )
+            already_seen_name <- c(.norm_name(existing$PREFERRED_NAME), .norm_name(Known_CAS$PREFERRED_NAME))
+            already_seen_cas  <- c(.norm_cas(existing$CASRN),  .norm_cas(Known_CAS$CASRN))
+
+            new_data <- new_data %>%
+                filter(!.norm_name(PREFERRED_NAME) %in% already_seen_name,
+                       !(.norm_cas(CASRN) %in% already_seen_cas & nzchar(.norm_cas(CASRN))))
+
+            if (nrow(new_data) == 0) return(invisible(NULL))
+
             googlesheets4::sheet_append(ss = sheet_id, data = new_data)
         }, error = function(e) {
             warning("Google Sheets write failed — compound not logged: ", conditionMessage(e))
@@ -1201,11 +1264,12 @@ server <- function(input, output, session) {
             if (src == "Manual") {
                 # CASRN comes from the editable text input.
                 raw_val  <- input[[paste0("casrn_input_", i)]]
-                casrn_val <- gsub("-", "", trimws(if (is.null(raw_val)) "" else raw_val))
+                casrn_val <- .canon_casrn(if (is.null(raw_val)) "" else raw_val)
                 if (checked && nchar(casrn_val) > 0) {
                     confirmed <- rbindlist(list(confirmed,
                         data.table(PREFERRED_NAME = df$source_name[i],
-                                   CASRN          = casrn_val)),
+                                   CASRN          = casrn_val,
+                                   source         = "Manual")),
                         fill = TRUE)
                 } else {
                     unresolved <- c(unresolved, df$source_name[i])
@@ -1216,7 +1280,8 @@ server <- function(input, output, session) {
                 if (checked && nchar(casrn_val) > 0) {
                     confirmed <- rbindlist(list(confirmed,
                         data.table(PREFERRED_NAME = df$source_name[i],
-                                   CASRN          = casrn_val)),
+                                   CASRN          = casrn_val,
+                                   source         = "API")),
                         fill = TRUE)
                 } else {
                     unresolved <- c(unresolved, df$source_name[i])
@@ -1258,11 +1323,11 @@ server <- function(input, output, session) {
     observeEvent(input$add_manual_casrn, {
         req(input$manual_name, input$manual_casrn)
         name  <- trimws(input$manual_name)
-        casrn <- gsub("-", "", trimws(input$manual_casrn))
+        casrn <- .canon_casrn(input$manual_casrn)
         if (name != "" && casrn != "") {
-            new_entry              <- data.table(PREFERRED_NAME = name, CASRN = casrn)
-            v$final_search_results <- rbind(v$final_search_results, new_entry)
-            v$manual_additions     <- rbind(v$manual_additions,     new_entry)
+            new_entry              <- data.table(PREFERRED_NAME = name, CASRN = casrn, source = "Manual")
+            v$final_search_results <- rbindlist(list(v$final_search_results, new_entry), fill = TRUE)
+            v$manual_additions     <- rbindlist(list(v$manual_additions,     new_entry), fill = TRUE)
             append_to_temp_cas(new_entry)
             v$manual_to_fill <- v$manual_to_fill[PREFERRED_NAME != name]
             v$summary_log    <- c(v$summary_log, paste("Manually added CASRN for", name))
@@ -1377,18 +1442,30 @@ server <- function(input, output, session) {
                             !is.na(hc5_ssd_ng_L)   ~ paste0(hc5_method, " (SSD)"),
                             !is.na(hc5_model_ng_L)  ~ paste0(hc5_method, " (Scaled)"),
                             TRUE                    ~ NA_character_
-                        )
+                        ),
+                        # msPAF_EC50 (de Zwart & Posthuma, 2005, Environ.
+                        # Toxicol. Chem. 24(11):2665-2679, Eq. 6): per-compound
+                        # TU uses the median EC50/LC50 as denominator -- the
+                        # SAME denominator as the standard CA-PTI computed
+                        # above (ref_matched$median_conc) -- NOT hc5_denom.
+                        # sigma_ec50 is this compound x taxon's SSD log-normal
+                        # spread (fitted, or group-level fallback; see
+                        # taxotox_install.R steps 7b/7c).
+                        median_conc = dplyr::coalesce(median_lc50_ng_L, predicted_lc50_ng_L)
                     ) %>%
                     filter(!is.na(hc5_denom)) %>%
                     left_join(p_final, by = "cas_number") %>%
                     filter(!is.na(PREFERRED_NAME)) %>%
-                    select(PREFERRED_NAME, ecotox_group, hc5_denom)
+                    select(PREFERRED_NAME, ecotox_group, hc5_denom, median_conc, sigma_ec50)
 
                 .calc_hc5 <- function(grp) {
                     denom <- ref_hc5 %>%
                         filter(ecotox_group == grp) %>%
-                        select(PREFERRED_NAME, hc5_denom)
-                    denom %>%
+                        select(PREFERRED_NAME, hc5_denom, median_conc, sigma_ec50)
+
+                    # ── HC5-based TU/PTI (unchanged) ───────────────────────
+                    tu_wide <- denom %>%
+                        select(PREFERRED_NAME, hc5_denom) %>%
                         left_join(v$user_data, by = "PREFERRED_NAME") %>%
                         mutate(across(where(is.numeric) & !hc5_denom, ~ .x / hc5_denom)) %>%
                         select(-hc5_denom) %>%
@@ -1396,6 +1473,94 @@ server <- function(input, output, session) {
                         pivot_wider(names_from = PREFERRED_NAME, values_from = TU) %>%
                         mutate(PTI = rowSums(across(where(is.numeric)), na.rm = TRUE)) %>%
                         select(Sample, PTI, everything())
+
+                    # ── msPAF_EC50 (de Zwart & Posthuma, 2005, Environ.
+                    # Toxicol. Chem. 24(11):2665-2679) ─────────────────────
+                    # Reframes the acute mixture toxic-unit sum as a
+                    # probability: the fraction of this taxon's community
+                    # predicted to be at/above its own EC50, given the SSD's
+                    # spread -- not just whether the toxic-unit sum crosses 1
+                    # (HC5-based PTI's criterion, in tu_wide above). Needs the
+                    # long-format per-compound intermediate because each
+                    # compound's own sigma participates in the mixture's
+                    # effective spread, not just its TU.
+                    conc_long <- denom %>%
+                        select(PREFERRED_NAME, median_conc, sigma_ec50) %>%
+                        left_join(v$user_data, by = "PREFERRED_NAME") %>%
+                        # Numeric-only sample columns, matching tu_wide's
+                        # where(is.numeric) guard above -- keeps both pivots
+                        # agreeing on what counts as a "Sample" column.
+                        pivot_longer(cols = where(is.numeric) & !any_of(c("median_conc", "sigma_ec50")),
+                                     names_to = "Sample", values_to = "C") %>%
+                        mutate(TU = if_else(is.na(C) | is.na(median_conc), 0, C / median_conc))
+
+                    mspaf <- conc_long %>%
+                        group_by(Sample) %>%
+                        summarise(
+                            # S = total EC50-based toxic units = the standard
+                            # CA-PTI for this taxon (de Zwart & Posthuma, 2005,
+                            # Eq. 1-3) -- NOT the HC5-based PTI in tu_wide.
+                            S       = sum(TU, na.rm = TRUE),
+                            S_known = sum(TU[!is.na(sigma_ec50)], na.rm = TRUE),
+                            # Contribution-weighted mean sigma (de Zwart &
+                            # Posthuma, 2005, Eq. 4-5; Posthuma & de Zwart,
+                            # 2012, Environ. Toxicol. Chem. 31(10):2175-2181):
+                            # a compound contributing more toxic units to the
+                            # mixture weights the mixture's effective SSD
+                            # spread more than a plain unweighted mean would.
+                            # Compounds missing sigma_ec50 (should be rare --
+                            # taxotox_install.R's coalesce() covers ~100% of
+                            # rows with any HC5 denominator) are excluded and
+                            # the weights renormalised over S_known.
+                            sigma_mix = if (S_known > 0) {
+                                sum((TU / S_known) * sigma_ec50, na.rm = TRUE)
+                            } else {
+                                NA_real_
+                            },
+                            n_missing_sigma = sum(TU > 0 & is.na(sigma_ec50)),
+                            .groups = "drop"
+                        ) %>%
+                        mutate(
+                            # msPAF_EC50 = Phi(log10(S) / sigma_mix) (de Zwart
+                            # & Posthuma, 2005, Eq. 6). By construction, when S
+                            # corresponds to exactly one compound's own HC5
+                            # (or a mixture where every contributing compound
+                            # shares one sigma) at HC5-PTI = 1, msPAF_EC50 =
+                            # 0.05 -- matching TaxoTox's HC5 = 5th-percentile
+                            # definition (see
+                            # Docs/TaxoTox_Technical_Methods.md Section 5.5).
+                            # NOT the same metric as msPAF-NOEC (chronic SSDs;
+                            # Posthuma et al., 2019, Environ. Toxicol. Chem.
+                            # 38(4):905-917; Oginah et al., 2025, Global
+                            # Change Biol. 31(1):e70305) -- do not compare
+                            # against that metric's ~5%-protective threshold
+                            # convention.
+                            # Uses S_known (not S) so the numerator and sigma_mix
+                            # describe the same compound set -- a compound
+                            # missing sigma_ec50 is excluded from both the
+                            # toxic-unit sum and the spread, rather than moving
+                            # S while sigma_mix stays blind to it. Currently a
+                            # non-issue (sigma_ec50 coverage ~100%), but keeps
+                            # the formula internally consistent if a future
+                            # compound is added without one.
+                            msPAF_EC50 = dplyr::case_when(
+                                S_known <= 0     ~ 0,         # no known-sigma toxic units present
+                                is.na(sigma_mix) ~ NA_real_,   # no compound with known sigma contributed
+                                TRUE             ~ pnorm(log10(S_known) / sigma_mix)
+                            )
+                        ) %>%
+                        select(Sample, msPAF_EC50, n_missing_sigma)
+
+                    if (any(mspaf$n_missing_sigma > 0)) {
+                        v$summary_log <- c(v$summary_log, sprintf(
+                            "Note: msPAF_EC50 (%s) excluded %d sample-compound pair(s) missing sigma_ec50 from the sigma_mix weighting.",
+                            grp, sum(mspaf$n_missing_sigma)
+                        ))
+                    }
+
+                    tu_wide %>%
+                        left_join(mspaf %>% select(-n_missing_sigma), by = "Sample") %>%
+                        select(Sample, PTI, msPAF_EC50, everything())
                 }
 
                 v$hc5_results <- list(

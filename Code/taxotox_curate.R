@@ -57,7 +57,7 @@ if (!nzchar(sheet_id))
 
 .gs4_auth_auto()
 temp_cas <- tryCatch(
-  googlesheets4::read_sheet(sheet_id, col_types = "cc") %>% as.data.frame(),
+  googlesheets4::read_sheet(sheet_id, col_types = "ccc") %>% as.data.frame(),
   error = function(e) stop("Cannot read Google Sheet: ", conditionMessage(e))
 )
 message(sprintf("Read %d row(s) from Google Sheet.", nrow(temp_cas)))
@@ -70,8 +70,32 @@ if (nrow(temp_cas) == 0) {
 }
 
 # ── Remove entries already present in Known_CAS ────────────────────────────────
+# Compares normalised (digits-only CASRN, lowercased/trimmed name) values --
+# Known_CAS.fst mixes dashed and dash-free CASRNs historically, and a raw
+# string comparison silently misses matches across that formatting gap
+# (confirmed: dozens of already-known compounds were slipping through the
+# old exact-match filter for exactly this reason).
+.norm_cas  <- function(x) gsub("[^0-9]", "", x)
+.norm_name <- function(x) tolower(trimws(x))
+
+# Standard dashed CASRN form (leading digits)-(2 digits)-(1 check digit),
+# counting from the right -- mirrors app.R's .canon_casrn(). Keeping CASRN
+# dashed matters beyond cosmetics: the CompTox API's DTXSID search only
+# reliably resolves dashed CASRNs (~99% dashed vs. ~22% dash-free, confirmed
+# against Data/dtxsid_map.csv), so a dash-free CASRN entering Known_CAS.fst
+# quietly loses CompTox gap-fill coverage for that compound.
+.canon_casrn <- function(x) {
+  d <- .norm_cas(trimws(x))
+  vapply(d, function(di) {
+    if (nchar(di) < 4) return(di)
+    n <- nchar(di)
+    paste0(substr(di, 1, n - 3), "-", substr(di, n - 2, n - 1), "-", substr(di, n, n))
+  }, character(1), USE.NAMES = FALSE)
+}
+
 already_known <- temp_cas %>%
-  filter(CASRN %in% known_cas$CASRN | PREFERRED_NAME %in% known_cas$PREFERRED_NAME)
+  filter((nzchar(.norm_cas(CASRN)) & .norm_cas(CASRN) %in% .norm_cas(known_cas$CASRN)) |
+         .norm_name(PREFERRED_NAME) %in% .norm_name(known_cas$PREFERRED_NAME))
 
 if (nrow(already_known) > 0) {
   cat(sprintf("Skipping %d compound(s) already in Known_CAS:\n", nrow(already_known)))
@@ -79,7 +103,8 @@ if (nrow(already_known) > 0) {
       sep = "\n")
   cat("\n")
   temp_cas <- temp_cas %>%
-    filter(!(CASRN %in% known_cas$CASRN | PREFERRED_NAME %in% known_cas$PREFERRED_NAME))
+    filter(!((nzchar(.norm_cas(CASRN)) & .norm_cas(CASRN) %in% .norm_cas(known_cas$CASRN)) |
+             .norm_name(PREFERRED_NAME) %in% .norm_name(known_cas$PREFERRED_NAME)))
 }
 
 if (nrow(temp_cas) == 0) {
@@ -115,7 +140,7 @@ for (i in seq_len(nrow(temp_cas))) {
   if (ans == "A") {
     added <- c(added, row$PREFERRED_NAME)
     new_row <- data.frame(PREFERRED_NAME = row$PREFERRED_NAME,
-                          CASRN          = gsub("-", "", trimws(row$CASRN)),
+                          CASRN          = .canon_casrn(row$CASRN),
                           stringsAsFactors = FALSE)
     known_cas <- bind_rows(known_cas, new_row)
   } else if (ans == "R") {

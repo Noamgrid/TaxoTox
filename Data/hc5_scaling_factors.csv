@@ -1,4 +1,4 @@
-"ecotox_group","scaling_factor","n_calibration"
-"algae",0.0790529512358928,469
-"crustacean",0.0996850867783484,824
-"fish",0.181037531768285,1282
+"ecotox_group","scaling_factor","n_calibration","sigma_group_fallback"
+"algae",0.0790529512358928,469,0.670018227834136
+"crustacean",0.0996850867783484,824,0.608789616489193
+"fish",0.181037531768285,1282,0.451244638392545
