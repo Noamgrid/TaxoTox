@@ -94,7 +94,23 @@ non-interactive runs.
 - Taxa: fish (`ecotox_group LIKE '%fish%'`), algae (`'%algae%'`), crustacean (`'%crustacean%'`)
 - Endpoints: LC50, EC50, IC50 (and their log-transformed variants `(log)LC50`,
   `(log)EC50`; decorated variants `LC50*`, `LC50/`, `IC50/` — decorators stripped after
-  back-transformation). IC50 is pooled alongside EC50 — see Section 5.4.
+  back-transformation), further restricted per taxon to one toxicological *effect* code
+  matching the standard OECD acute test each taxon is meant to represent — see Section 5.4
+  for the full rationale and empirical counts:
+  - **fish**: `effect == "MOR"` (mortality only; OECD 203, 96h acute fish LC50)
+  - **crustacean**: `effect %in% c("MOR", "ITX")` (mortality or immobilisation; OECD
+    202's 48h Daphnia test is reported in ECOTOX under effect `ITX`, not `MOR`)
+  - **algae**: `effect %in% c("POP", "GRO")` **and** endpoint restricted to EC50/IC50
+    only — LC50 is dropped entirely for algae (OECD 201 algal growth inhibition test)
+  - Effect-code decorators (`~`, `/`) are stripped *before* this filter, not after.
+- **Algae observation-duration window**: algae rows are additionally restricted to a
+  48–120h observation duration (`results.obs_duration_mean`/`obs_duration_unit`,
+  converted to `obs_duration_h`; not the test-level `exposure_duration_*` fields, which
+  are missing far more often). Rows with unknown (`NA`) duration are *kept*, not
+  dropped — dropping them outright would have cost 70 of 1,764 algae compounds (~4%)
+  their entire algae denominator. `obs_duration_h` is retained as a column in
+  `final_ecotox_data.fst` for all three taxa, for a possible future fish/crustacean
+  duration filter, even though it's only acted on for algae today.
 - Concentration: `min_concentration` = lowest of up to three reported concentration columns
   (`conc1_mean`, `conc2_mean`, `conc3_mean`); conservative choice for mixture toxicity
 
@@ -116,8 +132,9 @@ The `AI` (active ingredient) prefix is stripped before unit matching.
 are back-transformed via `10^value` before unit conversion.
 
 **Aggregation** (Step 7a): median of all `conc_ng_L` values per
-`(cas_number, ecotox_group)` pair → `median_lc50_ng_L`. Note that LC50 and EC50
-are combined before computing the median; see Section 5.3 for justification.
+`(cas_number, ecotox_group)` pair, *after* the per-taxon effect-code filter above,
+→ `median_lc50_ng_L`. LC50/EC50/IC50 rows surviving that filter are combined before
+computing the median; see Section 5.4 for justification.
 
 ---
 
@@ -246,31 +263,54 @@ that the empirical distribution for a given group warrants a different protectio
 no ECOTOX data, `hc5_model_ng_L = predicted_lc50_ng_L × k`. This assignment is deferred
 until `predicted_lc50_ng_L` is populated.
 
-### 5.4 Combining LC50, EC50, and IC50 before computing the median
+### 5.4 Per-taxon effect-code filter, and combining LC50/EC50/IC50 before the median
 
-TaxoTox merges LC50 (lethal concentration), EC50 (effective concentration), and IC50
-(inhibitory concentration) results before computing `median_lc50_ng_L`. All three
-endpoint types represent the concentration causing a 50% response in an acute toxicity
-test and are considered interchangeable for the TU framework in standard practice
-(Backhaus & Faust, 2012; ECHA guidance).
+**Why an effect-code filter at all.** Before this filter existed, TaxoTox kept every
+ECOTOX record tagged `LC50`, `EC50`, or `IC50` for a taxon, regardless of what
+toxicological *effect* (ECOTOX's own `effect` field) the test actually measured. In
+practice this pooled biologically different endpoints into one median per compound ×
+taxon: the algae denominator mixed population-growth EC50s with short photosynthesis
+assays and chlorophyll/biochemistry endpoints; fish and crustacean pools included
+sublethal EC50s (behaviour, reproduction, feeding, etc.) alongside the intended
+acute-lethality/immobilisation endpoint. TaxoTox now restricts each taxon to the one
+effect code (or pair of codes) matching the standard OECD acute test it's meant to
+represent:
 
-IC50 is overwhelmingly an algae-relevant addition: ECOTOX curators label the same
-growth-inhibition assay (population growth rate, biomass, chlorophyll, photosynthesis)
-as either "EC50" or "IC50" depending on the source publication's own terminology, with
-no biological distinction between the two for this taxon — confirmed directly against
-the ECOTOX Knowledgebase, where 234 compounds have **both** an EC50 and an IC50 algae
-result on record. Including IC50 added net-new algae denominator coverage for roughly 59
-compounds (compounds with no prior EC50/LC50 data at all) and additional replicate data
-for ~183 already-covered compounds, out of ~1,800 algae compounds covered beforehand.
-Fish and crustacean gain far less (IC50 terminology is specific to inhibition/growth-type
-assays, rare in lethality-framed fish/crustacean testing), but the filter is one shared
-code path applied uniformly across all three taxa.
+| Taxon | Effect code(s) kept | Rationale |
+|---|---|---|
+| Fish | `MOR` (mortality) | OECD 203, 96h acute fish LC50 |
+| Crustacean | `MOR` or `ITX` (immobilisation) | OECD 202's 48h *Daphnia* test is reported in ECOTOX under `ITX`, not `MOR` — `MOR`-only would cut crustacean EC50 coverage from ~1,825 to ~255 compounds |
+| Algae | `POP` (population growth/abundance/biomass/cell density) or `GRO` (growth) | OECD 201 algal growth inhibition test; excludes physiology (`PHY`, ECOTOX's generic "Physiology" code, not specifically photosynthesis), biochemistry/chlorophyll (`BCM`), and other non-growth algal effects |
+
+Effect-code decorators (`~`, `/`) are stripped *before* this filter is applied, not after.
+
+**Why IC50 stays for algae, and why LC50 does not.** IC50 is overwhelmingly an
+algae-relevant endpoint: ECOTOX curators label the same growth-inhibition assay as
+either "EC50" or "IC50" depending on the source publication's own terminology, with no
+biological distinction between the two once both are restricted to the `POP`/`GRO`
+effect codes above — so TaxoTox keeps both EC50 and IC50 for algae, but restricted to
+those two effects. Post-filter: 1,614 algae compounds have a `POP`/`GRO` EC50, 202 have
+a `POP`/`GRO` IC50, 143 have both, and IC50 adds 59 net-new compounds with no `POP`/`GRO`
+EC50 at all — out of 1,673 total algae compounds covered (EC50 or IC50) after this
+filter. LC50 is dropped entirely for algae: an algal "LC50" reports a mortality-type
+effect (cell death), which is a different biological endpoint from the growth-inhibition
+assay OECD 201 and this taxon's TU denominator are built around, not a terminology
+variant of the same test the way EC50/IC50 are.
+
+**Duration window.** Algae rows are further restricted to a 48–120h observation
+duration (`obs_duration_h`, Section 3) — outside that window, a "growth inhibition"
+endpoint no longer corresponds to the same OECD 201 timescale. Rows with unknown
+duration are kept rather than dropped, since dropping them would have cost a real slice
+of algae coverage (70 of 1,764 compounds, ~4%) their entire algae denominator for no
+better reason than a missing metadata field, not evidence the test was out of range.
 
 This assumption is validated empirically by Plot 3 of `Code/validate_reference.R`,
 which plots median LC50 vs median EC50, and median EC50 vs median IC50, per compound ×
-group for all pairs where both endpoint types are available. A close 1:1 relationship
-supports the combined-median approach; systematic divergence would indicate the need to
-separate them.
+group for all pairs where both endpoint types are available, post-filter. **Plot 3
+(LC50 vs EC50) no longer has an algae panel** — algae has zero LC50 rows after this
+change, so there are no algae compound×group pairs left with both LC50 and EC50 data.
+It remains meaningful for fish and crustacean, where both endpoints survive the filter.
+Plot 3b (EC50 vs IC50) remains meaningful for all three taxa.
 
 ### 5.5 msPAF_EC50 (Multi-substance Potentially Affected Fraction)
 

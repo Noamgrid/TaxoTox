@@ -38,8 +38,11 @@
 # ECOTOX DATA PREPARATION:
 #   final_ecotox_data.fst is built once by running taxotox_install.R.
 #   That script queries the local ECOTOXr SQLite cache, retains only
-#   LC50/EC50 endpoints for fish, algae, and crustaceans, applies unit
-#   conversions to ng/L, and back-transforms (log)-reported values.
+#   LC50/EC50/IC50 endpoints for fish, algae, and crustaceans, restricted to
+#   one toxicological effect per taxon matching its standard OECD acute test
+#   (fish: mortality; crustacean: mortality or immobilisation; algae:
+#   population growth/GRO, EC50/IC50 only, plus a 48-120h duration window),
+#   applies unit conversions to ng/L, and back-transforms (log)-reported values.
 #   The resulting flat table is stored as an fst file for fast session
 #   loading. taxotox_install.R's Step 0a offers to refresh the underlying
 #   ECOTOX database (~3 months) before rebuilding, when run interactively.
@@ -167,7 +170,7 @@ ui <- fluidPage(
                 # Method checkboxes (A-5)
                 tags$p(style = "margin-bottom:4px; font-weight:bold; font-size:13px;",
                        "Methods:"),
-                checkboxInput("method_hc5",       "HC5-based TU/PTI",       value = FALSE),
+                checkboxInput("method_hc5",       "HC5 PTI + msPAF EC50",       value = FALSE),
                 checkboxInput("method_benchmark", "Benchmark Hazard Index",  value = FALSE),
                 checkboxInput("method_ia",        "Independent Action (IA)", value = FALSE),
                 checkboxInput("method_cama",      "CAMA",                    value = FALSE),

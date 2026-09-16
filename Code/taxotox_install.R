@@ -18,9 +18,16 @@ setwd(.script_dir)
 # -----------------------------------------------------------------------------
 # Purpose : Build the toxicity reference dataset used by the TaxoTox Shiny app.
 #           Queries the local ECOTOX SQLite cache, filters to aquatic organisms
-#           (fish / algae / crustacean) and acute lethal/effective-concentration
-#           endpoints (LC50 / EC50), normalises all concentrations to ng/L, and
-#           writes the result to Data/final_ecotox_data.fst.
+#           (fish / algae / crustacean), then to one toxicological effect per
+#           taxon matching the standard OECD acute test it's meant to
+#           represent, keeping only LC50/EC50/IC50 endpoint rows tagged with
+#           that effect (fish: mortality only; crustacean: mortality or
+#           immobilisation; algae: population growth/GRO only, EC50/IC50
+#           only -- LC50 dropped). Algae rows are additionally restricted to
+#           a 48-120h observation-duration window (rows with unknown
+#           duration are kept, not dropped). See Docs/TaxoTox_Technical_Methods.md
+#           Section 5.4. Normalises all concentrations to ng/L, and writes
+#           the result to Data/final_ecotox_data.fst.
 #
 # Output  : ../Data/final_ecotox_data.fst
 #           One row per test result; key columns used by app.R:
@@ -282,6 +289,12 @@ WITH enriched_results AS (
         r.conc3_mean,
         r.conc1_min,
         r.conc1_max,
+        -- Result-level observation duration (distinct from tests.exposure_duration_*
+        -- above): missing for ~half of algae rows and ~70% of fish/crustacean rows,
+        -- but is the field that actually corresponds to the reported endpoint, so it's
+        -- kept alongside (not instead of) the existing exposure_duration_* columns.
+        r.obs_duration_mean,
+        r.obs_duration_unit,
         s.species,
         s.genus,
         s.family,
@@ -336,6 +349,8 @@ SELECT
     er.exposure_type,
     er.exposure_duration_mean,
     er.exposure_duration_unit,
+    er.obs_duration_mean,
+    er.obs_duration_unit,
     er.media_type,
     er.measurement,
     er.measurement_comments,
@@ -426,18 +441,79 @@ final_ecotox_data <- filterd_ecotox_data_conc_unit %>%
   #   "(log)EC50" → "EC50",  "LC50*" → "LC50",  "LC50/" → "LC50",  "IC50/" → "IC50"
   mutate(endpoint = str_remove(endpoint, "^\\(log\\)"),
          endpoint = str_replace_all(endpoint, "[*/]", "")) %>%
-  # Keep only acute lethal / effective-/inhibitory-concentration endpoints.
-  # These represent the most widely reported, standardised benchmarks in ECOTOX
-  # and are the denominators in the Toxic Unit (TU) framework. IC50 is included
-  # alongside EC50 for algae in particular: ECOTOX's IC50 rows share the exact
-  # same effect/measurement code profile as its EC50 rows (population growth
-  # rate, biomass, chlorophyll, photosynthesis) -- different source studies
-  # label the identical growth-inhibition assay "IC50" vs "EC50" depending on
-  # publication convention, not a biological difference. Confirmed empirically:
-  # 234 compounds have BOTH an EC50 and an IC50 algae result in ECOTOX. See
-  # Docs/TaxoTox_Technical_Methods.md Section 5.4.
-  filter(endpoint %in% c("LC50", "EC50", "IC50")) %>%
-  mutate(effect = str_replace_all(effect, "[~/]", ""))
+  # Strip effect-code decorators (~ approximation flag, / footnote marker)
+  # BEFORE filtering on effect below -- this used to run after the endpoint
+  # filter, which meant an undecorated exact-match filter would have silently
+  # missed decorated rows had one ever been added on effect.
+  mutate(effect = str_replace_all(effect, "[~/]", "")) %>%
+  # Result-level observation duration, converted to hours. Only acted on for
+  # algae right now (see the effect-code filter below), but kept as a column
+  # throughout final_ecotox_data.fst for a possible future fish/crustacean
+  # duration filter. Units observed in ECOTOX: h, d, wk, min; anything else
+  # (or missing) becomes NA rather than being silently mis-converted.
+  mutate(obs_duration_h = case_when(
+    obs_duration_unit == "h"   ~ as.numeric(obs_duration_mean),
+    obs_duration_unit == "d"   ~ as.numeric(obs_duration_mean) * 24,
+    obs_duration_unit == "wk"  ~ as.numeric(obs_duration_mean) * 168,
+    obs_duration_unit == "min" ~ as.numeric(obs_duration_mean) / 60,
+    TRUE ~ NA_real_
+  )) %>%
+  # Per-taxon toxicological effect-code filter -- keep one biologically
+  # defined endpoint per taxon instead of pooling every ECOTOX effect code
+  # (mortality, immobilisation, growth, photosynthesis, behaviour, ...) under
+  # LC50/EC50/IC50. See Docs/TaxoTox_Technical_Methods.md Section 5.4.
+  #   fish:       mortality only (OECD 203, 96h acute fish LC50)
+  #   crustacean: mortality OR immobilisation (OECD 202, 48h Daphnia EC50 is
+  #               reported in ECOTOX as effect=ITX, not MOR -- MOR-only would
+  #               roughly halve crustacean coverage: confirmed empirically,
+  #               crustacean EC50 is 8,645 ITX rows / 1,825 compounds vs.
+  #               1,204 MOR rows / 255 compounds)
+  #   algae:      population growth/abundance/biomass/cell density (POP) or
+  #               growth (GRO) only, EC50/IC50 only -- LC50 dropped entirely
+  #               (OECD 201 algal growth inhibition test); excludes
+  #               physiology/photosynthesis (PHY), biochemistry/chlorophyll
+  #               (BCM), and other non-growth algal effects
+  filter(
+    (ecotox_group == "fish"       & effect == "MOR" &
+                                     endpoint %in% c("LC50", "EC50", "IC50")) |
+    (ecotox_group == "crustacean" & effect %in% c("MOR", "ITX") &
+                                     endpoint %in% c("LC50", "EC50", "IC50")) |
+    (ecotox_group == "algae"      & effect %in% c("POP", "GRO") &
+                                     endpoint %in% c("EC50", "IC50"))
+  )
+
+# ---------------------------------------------------------------------------
+# Algae observation-duration diagnostic (informational, printed on every
+# rebuild). This surfaced a real decision during development: dropping
+# NA-duration rows outright would have cost 70 of 1,764 algae compounds
+# (~4%) their entire algae denominator, since their only surviving POP/GRO
+# EC50/IC50 rows all lack a duration value. Decision made and applied below:
+# NA duration is treated as "not excluded" -- the 48-120h window only drops
+# algae rows with a KNOWN duration outside that range; NA rows pass through.
+# ---------------------------------------------------------------------------
+.algae_all    <- final_ecotox_data %>% filter(ecotox_group == "algae")
+.algae_na     <- .algae_all %>% filter(is.na(obs_duration_h))
+.cas_all      <- unique(.algae_all$cas_number)
+.cas_with_known_duration <- unique(.algae_all %>% filter(!is.na(obs_duration_h)) %>% pull(cas_number))
+.cas_lost_if_na_dropped  <- setdiff(.cas_all, .cas_with_known_duration)
+
+message(sprintf(
+  "\nAlgae POP/GRO EC50/IC50 duration diagnostic:\n  Total rows: %d, total compounds: %d\n  NA obs_duration_h: %d rows / %d compounds\n  Compounds that would have lost their ENTIRE algae denominator had NA rows been dropped: %d (kept instead, per decision above)\n",
+  nrow(.algae_all), length(.cas_all), nrow(.algae_na), length(unique(.algae_na$cas_number)),
+  length(.cas_lost_if_na_dropped)
+))
+
+# Apply the 48-120h observation-duration window to algae only. Fish/crustacean
+# rows are untouched; algae rows with a known duration outside the window are
+# dropped, NA-duration algae rows pass through (see decision above).
+final_ecotox_data <- final_ecotox_data %>%
+  filter(
+    ecotox_group != "algae" |
+    is.na(obs_duration_h) |
+    (obs_duration_h >= 48 & obs_duration_h <= 120)
+  )
+
+rm(.algae_all, .algae_na, .cas_all, .cas_with_known_duration, .cas_lost_if_na_dropped)
 
 # Step 5: Summary table (median per chemical × taxonomic group).
 # Not used by app.R directly — kept for diagnostics.
@@ -449,6 +525,10 @@ taxotox_data <- final_ecotox_data %>%
 # Step 6: Write to FST for fast loading in app.R.
 # app.R reads this file at startup and computes median(conc_ng_L) per
 # (cas_number, ecotox_group) as the species-sensitivity denominator.
+if (file.exists("../Data/final_ecotox_data.fst")) {
+  file.copy("../Data/final_ecotox_data.fst",
+           "../Data/final_ecotox_data.fst.bak_pre_effect_filter", overwrite = TRUE)
+}
 write_fst(final_ecotox_data, "../Data/final_ecotox_data.fst", compress = 50)
 .mark_done("S1_ecotox")
 
@@ -738,6 +818,12 @@ message(sprintf(
 
 # Step I-4 (partial): Write taxotox_reference.fst after I-1a/I-1b.
 # Overwritten again after I-2 if the CompTox API key is available.
+# One backup of the pre-rebuild file, taken here (the first write of this
+# run) rather than at every subsequent overwrite in this same rebuild.
+if (file.exists("../Data/taxotox_reference.fst")) {
+  file.copy("../Data/taxotox_reference.fst",
+           "../Data/taxotox_reference.fst.bak_pre_effect_filter", overwrite = TRUE)
+}
 write_fst(reference, "../Data/taxotox_reference.fst", compress = 50)
 message(sprintf("taxotox_reference.fst written (pre-API): %d rows, %d columns.",
                 nrow(reference), ncol(reference)))
@@ -1069,13 +1155,25 @@ if (!nzchar(COMPTOX_KEY)) {
       # algae: no suitable OPERA endpoint — left NA by design
     )
 
-  # Pivot to long format — fish and crustacean only
+  # Pivot to long format — fish and crustacean only.
+  # cas_number is normalized dash-free here -- opera_wide's cas_number comes
+  # from dtxsid_map (== Known_CAS$CASRN, which is dashed by convention), but
+  # every cas_number in taxotox_reference.fst must be dash-free to match
+  # ECOTOX's native format and app.R's gsub("-", "", CASRN) matching
+  # convention (same normalization already applied in
+  # taxotox_install_nowell.R and taxotox_install_benchmarks.R). Without this,
+  # the left_join below (adding predicted_lc50_ng_L onto existing ECOTOX
+  # rows) silently matches nothing, and every CompTox-only row created in
+  # I-2e gets an unmatchable dashed cas_number -- confirmed directly: an
+  # install run produced "Both: 0" compounds and app.R returned zero TU/PTI
+  # for any sample relying on a CompTox-only-covered compound.
   opera_long <- bind_rows(
     opera_wide %>% transmute(cas_number, chemical_name = preferred_name,
                              ecotox_group = "fish",       predicted_lc50_ng_L = pred_fish_ng_L),
     opera_wide %>% transmute(cas_number, chemical_name = preferred_name,
                              ecotox_group = "crustacean", predicted_lc50_ng_L = pred_crust_ng_L)
   ) %>%
+    mutate(cas_number = gsub("-", "", cas_number)) %>%
     filter(!is.na(predicted_lc50_ng_L))
 
   message(sprintf("Step I-2d: %d compound×group pairs with predicted LC50 (ng/L)",

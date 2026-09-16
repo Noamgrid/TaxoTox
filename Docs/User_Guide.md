@@ -189,7 +189,8 @@ alongside the standard calculation on the same button press:
   randomly drawn species from that taxon's community is at or above its own EC50, read
   directly off the underlying Species Sensitivity Distribution rather than just whether
   the toxic-unit sum crosses 1. It's built from the same acute LC50/EC50/IC50 SSD fits as
-  HC5 itself — a second way of reading the same computation, not a separate method — so it
+  HC5 itself (per-taxon effect-code filtered — see `TaxoTox_Technical_Methods.md` Section
+  5.4) — a second way of reading the same computation, not a separate method — so it
   shares HC5's coverage and caveats. It is **not** the same metric as the chronic
   "msPAF-NOEC" reported elsewhere in the ecotoxicology literature (a different,
   chronic-endpoint SSD with its own ~5%-protective calibration convention); do not compare
